@@ -1860,9 +1860,9 @@ const FONT='system-ui,-apple-system,"Segoe UI",Roboto,sans-serif';
 const TABS=[['herr','🧰 Útiles'],['recip','🧪 Recipiente'],['civ','🏛️ Pueblos'],['datos','📊 Datos'],['lab','⚙️ Ajustes']];
 const TOOLS=[['look','👁️ Observar'],['grab','🤏 Pinzas'],['add','➕ Añadir'],['smash','🔨 Demoler'],
   ['vax','💉 Vacuna'],['virus','🦠 Virus V'],['plague','☣️ Peste'],['locust','🦗 Langostas'],
-  ['rain','🌧️ Lluvia'],['fire','🔥 Fuego'],['wall','🧱 Pared'],['rect','⬜ Recinto'],['erase','🧽 Borrar']];
+  ['rain','🌧️ Lluvia'],['fire','🔥 Fuego'],['wall','🧱 Pared'],['rect','⬜ Recinto'],['erase','💥 Romper muros']];
 const TOOL_HELP={
-  smash:'Mantén pulsado y arrastra: arrasas todos los edificios y árboles por donde pasas, como una apisonadora. En VR también puedes golpearlos con el mando (un golpe rápido) sin elegir ninguna herramienta.',
+  smash:'Mantén pulsado y arrastra: arrasas edificios, árboles y muros (también el cristal de los recipientes) por donde pasas. En VR también puedes golpearlos con el mando (un golpe rápido) sin elegir ninguna herramienta.',
   rain:'Pulsa para que llueva ahí: el agua sube e inunda la zona. Ahoga a los que no nadan (las células y los peces sí), estropea casas bajas y cultivos, y apaga incendios. Desde la Era industrial los pueblos levantan diques.',
   fire:'Pulsa para prender fuego. Se propaga por las algas, los árboles y los edificios. Desde la Ciudad-estado los pueblos apagan fuegos cerca de casa, y con un parque de bomberos mucho mejor.',
   plague:'Pulsa para soltar una peste: los que estén cerca enferman (color mostaza) y contagian a quien tocan. Desde el Reino los pueblos investigan la cura (los tecnológicos, más rápido) y construyen un hospital.',
@@ -1874,14 +1874,14 @@ const TOOL_HELP={
   virus:'Pulsa sobre un organismo para infectarlo. Tras incubar se vuelve zombi y contagia a mordiscos. De vez en cuando nace un ejemplar violeta inmune; si inyectas el virus a uno inmune, el virus muta a una cepa nueva y la inmunidad deja de servir.',
   wall:'Mantén pulsado y arrastra para levantar muros de piedra.',
   rect:'Mantén pulsado y arrastra para dibujar un recinto cerrado. Para ampliar un recipiente, dibújalo pegado y borra la pared que los separa: el espacio nuevo hereda sus condiciones.',
-  erase:'Mantén pulsado y arrastra sobre cualquier pared para borrarla. Si abres un recipiente, sus organismos saldrán a la mesa.',
+  erase:'Mantén pulsado y arrastra sobre cualquier muro para romperlo: el cristal de los 6 recipientes, tus paredes de piedra o las murallas de madera de los pueblos. Si abres un recipiente, sus organismos saldrán a la mesa. (🔨 Demoler y golpear con el mando también rompen muros.)',
 };
 const VR_HELP=[
   '🎯 Gatillo: usar la herramienta y pulsar botones',
-  '✊ Grip apuntando a un organismo: pinzas · en el vacío: agarrar el mundo',
+  '✊ Grip: sobre el panel lo mueves · sobre un ser, pinzas · en el vacío, agarrar el mundo',
+  '🕹️ Izquierdo: caminar · Derecho ← →: girar · ↑ apunta y suelta: teletransporte',
+  '👊 Golpea edificios o muros con el mando para derribarlos',
   '✊✊ Grip con las dos manos: encoger o agrandar el laboratorio',
-  '👊 Golpea un edificio con el mando para derribarlo',
-  '🕹️ Stick izquierdo: caminar · derecho: girar y volar',
   '🅰️ A/X: panel · 🅱️ B/Y: pausa · pulsar stick: volver al inicio',
 ];
 
@@ -1919,6 +1919,9 @@ function drawPanel(){
   vr.buttons=[];
   pc.clearRect(0,0,PANEL_W,PANEL_H);
   rrPath(pc,2,2,PANEL_W-4,PANEL_H-4,34);pc.fillStyle=UI.bg;pc.fill();pc.lineWidth=4;pc.strokeStyle=UI.line;pc.stroke();
+  // asa para arrastrar el panel en VR (gatillo en esta franja, o grip en cualquier parte)
+  rrPath(pc,PANEL_W/2-90,10,180,10,5);pc.fillStyle=vr.hover==='__grab'?'#ffffff':'#4a5a64';pc.fill();
+  tx('✊ arrástrame',PANEL_W-32,30,18,UI.muted,false,'right');
   tx('🧪 El laboratorio',32,64,42,UI.ink,true);
   tx(`Ciclo ${fmt(S.tick)}`,PANEL_W-32,62,28,UI.muted,false,'right');
   const t=ui.tot;
@@ -2053,12 +2056,13 @@ function tabDatos(y){
 }
 function tabLab(y){
   const adj=(k,d,lo,hi)=>()=>{S[k]=clamp(Math.round((S[k]+d)*10)/10,lo,hi);vr.dirty=true;};
-  stepper(y,'Tamaño de los organismos',`${Math.round(S.vis*100)} %`,adj('vis',-.1,1,3),adj('vis',.1,1,3));y+=74;
-  stepper(y,'Crecimiento de algas',`${Math.round(S.food*100)} %`,adj('food',-.1,.2,2.5),adj('food',.1,.2,2.5));y+=74;
-  stepper(y,'Mutaciones al nacer',`${Math.round(S.mut*100)} %`,adj('mut',-.1,.2,3),adj('mut',.1,.2,3));y+=74;
-  stepper(y,'Velocidad de evolución',`×${S.evo}`,adj('evo',-.5,1,4),adj('evo',.5,1,4));y+=74;
+  stepper(y,'Tamaño de los organismos',`${Math.round(S.vis*100)} %`,adj('vis',-.1,1,3),adj('vis',.1,1,3));y+=66;
+  stepper(y,'Crecimiento de algas',`${Math.round(S.food*100)} %`,adj('food',-.1,.2,2.5),adj('food',.1,.2,2.5));y+=66;
+  stepper(y,'Mutaciones al nacer',`${Math.round(S.mut*100)} %`,adj('mut',-.1,.2,3),adj('mut',.1,.2,3));y+=66;
+  stepper(y,'Velocidad de evolución',`×${S.evo}`,adj('evo',-.5,1,4),adj('evo',.5,1,4));y+=66;
   const capAdj=d=>()=>{S.cap=clamp(S.cap+d,500,CAP);vr.dirty=true;};
-  stepper(y,'Población máxima',fmt(S.cap),capAdj(-100),capAdj(100));y+=76;
+  stepper(y,'Población máxima',fmt(S.cap),capAdj(-100),capAdj(100));y+=66;
+  stepper(y,'Tu altura en VR',`${rig.position.y>=0?'+':''}${Math.round(rig.position.y*100)} cm`,()=>changeHeight(-.2),()=>changeHeight(.2));y+=72;
   sec('Música ambiental',y);y+=16;
   button(32,y,300,58,music.on?'🎵 Música: sí':'🔇 Música: no',()=>{music.on=!music.on;music.apply();},{id:'mus',on:music.on,onColor:UI.focus});
   button(560,y,96,58,'−',()=>{music.vol=clamp(Math.round((music.vol-.1)*10)/10,0,1);},{id:'mv-',size:34});
@@ -2066,10 +2070,10 @@ function tabLab(y){
   button(896,y,96,58,'+',()=>{music.vol=clamp(Math.round((music.vol+.1)*10)/10,0,1);},{id:'mv+',size:34});
   y+=70;
   tx(music.status(),32,y+24,21,UI.muted,false,'left',PANEL_W-64);
-  y+=56;sec('Controles en VR',y);y+=14;
-  for(const l of VR_HELP){tx(l,32,y+26,21,UI.ink,false,'left',PANEL_W-64);y+=31;}
+  y+=50;sec('Controles en VR',y);y+=10;
+  for(const l of VR_HELP){tx(l,32,y+24,20,UI.ink,false,'left',PANEL_W-64);y+=26;}
   const armed=vr.resetArmed>performance.now();
-  button(32,PANEL_H-92,PANEL_W-64,62,armed?'⚠️ Pulsa otra vez: se pierde todo el laboratorio':'↺ Reiniciar laboratorio',()=>{
+  button(32,PANEL_H-74,PANEL_W-64,54,armed?'⚠️ Pulsa otra vez: se pierde todo el laboratorio':'↺ Reiniciar laboratorio',()=>{
     if(vr.resetArmed>performance.now()){vr.resetArmed=0;resetLab();}else vr.resetArmed=performance.now()+3000;
   },{id:'reset',color:armed?UI.danger:UI.line,textColor:armed?'#ff8f7a':UI.muted});
 }
@@ -2151,6 +2155,22 @@ function smashAt(p){
   let n=0,hit;
   while((hit=findBuildingAt(p.x,p.y,SMASH_R))){destroyBuilding(hit.tb,hit.i,'demolición');n++;}
   for(const id in S.tribes){const tr=S.tribes[id].trees;for(let i=tr.length-1;i>=0;i--)if((tr[i].x-p.x)**2+(tr[i].y-p.y)**2<SMASH_R*SMASH_R){tr.splice(i,1);n++;}}
+  return n+smashWalls(p,8);
+}
+/* Rompe los muros (cristal de los recipientes, piedra y madera de los pueblos) en un radio */
+function smashWalls(p,r){
+  const tx0=Math.floor(p.x/T),ty0=Math.floor(p.y/T),rt=Math.ceil(r/T);let n=0,glass=0;
+  for(let dy=-rt;dy<=rt;dy++)for(let dx=-rt;dx<=rt;dx++){
+    const x=tx0+dx,y=ty0+dy;if(x<0||y<0||x>=TW||y>=TH||dx*dx+dy*dy>rt*rt)continue;
+    const i=y*TW+x,tp=wallT[i];if(!tp||tp===VOID)continue;
+    if(tp===1)glass++;setWall(i,0);n++;
+  }
+  if(n){
+    const q=P3(p.x,p.y),X=q.x,Y=q.y,Z=q.z;
+    for(let k=0;k<Math.min(14,n*2);k++)fxB.debris.push({x:X+rand(-.03,.03),y:Y+rand(.02,.09),z:Z+rand(-.03,.03),vx:rand(-.6,.6),vy:rand(.3,1),vz:rand(-.6,.6),
+      r:rand(.004,.01),life:1.1,c:glass&&k%2?C.glass:C.stone,rx:rand(0,6),fy:Y});
+    if(glass&&performance.now()-(smashWalls.toastAt||0)>6000){smashWalls.toastAt=performance.now();toast('💥 ¡Has roto el cristal del recipiente! Los organismos podrán salir.');}
+  }
   return n;
 }
 /* Pinzas: coger, mover y soltar un organismo (gatillo con la herramienta Pinzas, o grip en VR) */
@@ -2271,15 +2291,24 @@ function makeXRPointer(i){
   const a1=new THREE.Mesh(armGeo,armMat),a2=new THREE.Mesh(armGeo,armMat);ctrl.add(a1,a2);ptr.arms=[a1,a2];
   ctrl.addEventListener('connected',e=>{ptr.source=e.data;ptr.active=true;});
   ctrl.addEventListener('disconnected',()=>{dropCarry(ptr);pointerUp(ptr);grabEnd(ptr);ptr.active=false;ptr.source=null;cursor.visible=false;});
-  ctrl.addEventListener('selectstart',()=>{updateXRRay(ptr);computeHit(ptr);ptr.down=true;pointerDown(ptr);});
-  ctrl.addEventListener('selectend',()=>{ptr.down=false;pointerUp(ptr);});
-  // Grip: si apuntas a un organismo, lo coges con las pinzas; si no, agarras el mundo
+  ctrl.addEventListener('selectstart',()=>{
+    updateXRRay(ptr);computeHit(ptr);ptr.down=true;
+    // gatillo en la barra superior del panel (fuera de los botones): arrastrar el panel
+    if(ptr.hit&&ptr.hit.kind==='panel'&&(1-ptr.hit.uv.y)*PANEL_H<PANEL_GRAB_H&&!panelButtonAt(ptr.hit.uv.x*PANEL_W,(1-ptr.hit.uv.y)*PANEL_H)){startPanelDrag(ptr);return;}
+    pointerDown(ptr);
+  });
+  ctrl.addEventListener('selectend',()=>{ptr.down=false;if(panelDrag.ptr===ptr){endPanelDrag();return;}pointerUp(ptr);});
+  // Grip: sobre el panel lo agarras; sobre un organismo, lo coges con las pinzas; si no, agarras el mundo
   ctrl.addEventListener('squeezestart',()=>{
     updateXRRay(ptr);computeHit(ptr);
+    if(ptr.hit&&ptr.hit.kind==='panel'){startPanelDrag(ptr);ptr.gripPanel=true;return;}
     if(!busy&&!ptr.carry&&ptr.hit&&ptr.hit.kind==='table'&&grabCreature(ptr,ptr.hit.sim)){ptr.gripCarry=true;return;}
     grabStart(ptr);
   });
-  ctrl.addEventListener('squeezeend',()=>{if(ptr.gripCarry)dropCarry(ptr);else grabEnd(ptr);});
+  ctrl.addEventListener('squeezeend',()=>{
+    if(ptr.gripPanel){ptr.gripPanel=false;endPanelDrag();return;}
+    if(ptr.gripCarry)dropCarry(ptr);else grabEnd(ptr);
+  });
   pointers.push(ptr);
 }
 makeXRPointer(0);makeXRPointer(1);
@@ -2298,6 +2327,7 @@ function handSmash(ptr,dt){
     const hy=_loc.y-r.oy;if(hy<-.03||hy>.5)continue;
     const hit=findBuildingAt(sx,sy,3);
     if(hit&&hy<BHEIGHT[hit.b.k]*BSCALE*K+.01){destroyBuilding(hit.tb,hit.i,'tu mano');buzz(ptr,1,140);}
+    else if(hy<.12&&smashWalls({x:sx,y:sy},7))buzz(ptr,.9,100);   // golpear un muro o el cristal lo rompe
     break;
   }
 }
@@ -2306,7 +2336,11 @@ function updateXRPointer(ptr,dt){
   ptr.laser.scale.z=ptr.hit?ptr.hit.dist:2;
   ptr.cursor.visible=!!ptr.hit;if(ptr.hit)ptr.cursor.position.copy(ptr.hit.point);
   const open=ptr.down||ptr.carry?.015:.12;ptr.arms[0].rotation.y=open;ptr.arms[1].rotation.y=-open;
-  ptr.laser.material.color.set(ptr.carry?'#fbd38d':mode==='virus'?'#B5F03C':mode==='vax'?'#FFD34D':mode==='grab'?'#fbd38d':mode==='erase'?'#e0603f':'#9ae6ff');
+  ptr.laser.material.color.set(ptr.tpAim?'#5ef0c8':panelDrag.ptr===ptr?'#ffffff':ptr.carry?'#fbd38d':mode==='virus'?'#B5F03C':mode==='vax'?'#FFD34D':mode==='grab'?'#fbd38d':mode==='erase'||mode==='smash'?'#e0603f':'#9ae6ff');
+  if(ptr.tpAim){
+    const {dest,look}=ptr.tpAim;tpMark.visible=true;tpMark.position.copy(dest);
+    tpMark.rotation.y=Math.atan2(-(look.x-dest.x),-(look.z-dest.z));
+  }
 }
 
 const _v1=new THREE.Vector3(),_v2=new THREE.Vector3();
@@ -2330,20 +2364,84 @@ function grabUpdate(){
     world.position.copy(grab.pivot).add(_v2.copy(grab.worldPos).sub(grab.pivot).multiplyScalar(s/grab.worldScale));
   }
 }
+/* ---------- Arrastrar el panel: sigue al mando mientras lo agarras y se queda donde lo sueltes ---------- */
+const PANEL_GRAB_H=110;   // franja superior del panel por la que se puede agarrar con el gatillo
+const panelDrag={ptr:null,off:new THREE.Matrix4()};
+const _pm=new THREE.Matrix4(),_pm2=new THREE.Matrix4(),_ps=new THREE.Vector3();
+function startPanelDrag(ptr){
+  ptr.ctrl.updateMatrixWorld(true);panel.updateMatrixWorld(true);
+  panelDrag.ptr=ptr;panelDrag.off.copy(ptr.ctrl.matrixWorld).invert().multiply(panel.matrixWorld);
+  vr.placed=true;buzz(ptr,.35,40);
+}
+function updatePanelDrag(){
+  const p=panelDrag.ptr;if(!p)return;
+  p.ctrl.updateMatrixWorld(true);rig.updateMatrixWorld(true);
+  _pm.copy(p.ctrl.matrixWorld).multiply(panelDrag.off);
+  _pm2.copy(rig.matrixWorld).invert().multiply(_pm);
+  _pm2.decompose(panel.position,panel.quaternion,_ps);panel.scale.set(1,1,1);
+}
+function endPanelDrag(){if(panelDrag.ptr)buzz(panelDrag.ptr,.2,25);panelDrag.ptr=null;}
+
+/* ---------- Moverse a pie ---------- */
+const tpMark=new THREE.Group();
+{
+  const m1=new THREE.Mesh(new THREE.RingGeometry(.16,.2,32).rotateX(-Math.PI/2),basic({color:'#5ef0c8',transparent:true,opacity:.85,depthTest:false,side:THREE.DoubleSide}));
+  const m2=new THREE.Mesh(new THREE.CylinderGeometry(.006,.006,1.4,8,1,true).translate(0,.7,0),basic({color:'#5ef0c8',transparent:true,opacity:.35,depthTest:false}));
+  const m3=new THREE.Mesh(new THREE.ConeGeometry(.05,.12,12).rotateX(Math.PI/2).translate(0,.02,-.26),basic({color:'#5ef0c8',transparent:true,opacity:.85,depthTest:false}));
+  for(const m of [m1,m2,m3]){m.renderOrder=35;tpMark.add(m);}
+}
+tpMark.visible=false;scene.add(tpMark);
+const _tv=new THREE.Vector3(),_tl=new THREE.Vector3();
+/* ¿A dónde te llevaría el teletransporte? Al suelo donde apuntas; si apuntas a la mesa o a una
+   encimera, al borde más cercano, mirando hacia ese punto. */
+function teleportTarget(ptr){
+  world.updateMatrixWorld(true);
+  const floorY=world.position.y+FY*world.scale.y;
+  let look=null,pt=null;
+  if(ptr.hit&&ptr.hit.kind==='table'){look=ptr.hit.point.clone();pt=ptr.hit.point.clone();}
+  else{
+    const d=ptr.ray.direction,o=ptr.ray.origin;if(d.y>-0.05)return null;
+    const t=(floorY-o.y)/d.y;if(t<=0||t>25)return null;
+    pt=o.clone().addScaledVector(d,t);
+  }
+  // pasar a coordenadas del mundo, apartarse de la mesa y de las encimeras, y no salir de la sala
+  _tl.copy(pt);world.worldToLocal(_tl);
+  const mx=MAIN.w*K/2+.5,mz=MAIN.h*K/2+.5;
+  if(Math.abs(_tl.x)<mx&&Math.abs(_tl.z)<mz){
+    const dx=mx-Math.abs(_tl.x),dz=mz-Math.abs(_tl.z);
+    if(dx<dz)_tl.x=Math.sign(_tl.x||1)*mx;else _tl.z=Math.sign(_tl.z||1)*mz;
+  }
+  _tl.x=clamp(_tl.x,-ROOM_W/2+1.3,ROOM_W/2-1.3);_tl.z=clamp(_tl.z,-ROOM_D/2+.4,ROOM_D/2-.4);_tl.y=FY;
+  const dest=world.localToWorld(_tl.clone());
+  if(!look)look=dest.clone().add(new THREE.Vector3(0,0,-1).applyAxisAngle(_UP,headPose().yaw));
+  return{dest,look};
+}
+function doTeleport(tp){
+  const {pos}=headPose();
+  rig.position.x+=tp.dest.x-pos.x;rig.position.z+=tp.dest.z-pos.z;rig.position.y+=tp.dest.y-(rig.position.y);
+  // girar para mirar hacia el punto elegido
+  const want=Math.atan2(-(tp.look.x-tp.dest.x),-(tp.look.z-tp.dest.z)),cur=headPose().yaw;
+  let da=want-cur;da=Math.atan2(Math.sin(da),Math.cos(da));
+  if(Math.abs(da)>.05)snapTurn(da);
+  if(vr.show&&!vr.placed)setTimeout(placePanel,30);
+}
 function gamepadUpdate(ptr,dt){
   const gp=ptr.source&&ptr.source.gamepad;if(!gp)return;
-  const dz=v=>Math.abs(v)<.15?0:v,x=dz(gp.axes[2]||0),y=dz(gp.axes[3]||0);
+  const dz=v=>Math.abs(v)<.18?0:v,x=dz(gp.axes[2]||0),y=dz(gp.axes[3]||0);
   if(ptr.source.handedness==='left'){
-    if(x||y){const {yaw}=headPose(),sp=1.6*dt;
-      rig.position.x+=(-Math.sin(yaw)*-y+Math.cos(yaw)*x)*sp;
-      rig.position.z+=(-Math.cos(yaw)*-y-Math.sin(yaw)*x)*sp;}
+    // caminar: hacia donde miras, con arranque suave
+    const {yaw}=headPose(),tx=(-Math.sin(yaw)*-y+Math.cos(yaw)*x)*1.4,tz=(-Math.cos(yaw)*-y-Math.sin(yaw)*x)*1.4;
+    ptr.vx=(ptr.vx||0)+(tx-(ptr.vx||0))*Math.min(1,dt*8);ptr.vz=(ptr.vz||0)+(tz-(ptr.vz||0))*Math.min(1,dt*8);
+    rig.position.x+=ptr.vx*dt;rig.position.z+=ptr.vz*dt;
   }else{
-    if(Math.abs(x)>.7&&!ptr.snap){ptr.snap=true;snapTurn(x>0?-Math.PI/6:Math.PI/6);}
+    // girar a saltos (izquierda/derecha) y teletransporte (empujar hacia delante, apuntar y soltar)
+    if(Math.abs(x)>.7&&!ptr.snap&&!ptr.tpAim){ptr.snap=true;snapTurn(x>0?-Math.PI/6:Math.PI/6);}
     if(Math.abs(x)<.3)ptr.snap=false;
-    if(y)rig.position.y=clamp(rig.position.y-y*dt*1.2,-.6,4);
+    if(y<-.6){ptr.tpAim=teleportTarget(ptr)||ptr.tpAim||null;}
+    else if(ptr.tpAim&&y>-.3){const tp=teleportTarget(ptr)||ptr.tpAim;ptr.tpAim=null;doTeleport(tp);buzz(ptr,.3,30);}
   }
   const pressed=i=>!!(gp.buttons[i]&&gp.buttons[i].pressed),edge=i=>pressed(i)&&!ptr.prev[i];
-  if(edge(4)){vr.show=!vr.show;if(vr.show)placePanel();}
+  if(edge(4)){vr.show=!vr.show;if(vr.show&&!vr.placed)placePanel();}
   if(edge(5))setSpeed(speed?0:DEFAULT_SPEED);
   if(edge(3))homeVR();
   ptr.prev=gp.buttons.map(b=>b.pressed);
@@ -2368,7 +2466,12 @@ function placePanel(){
 function homeVR(){
   rig.position.set(0,0,0);rig.rotation.set(0,0,0);
   world.position.copy(WORLD_HOME);world.scale.setScalar(1);
-  setTimeout(placePanel,50);
+  vr.placed=false;setTimeout(placePanel,50);
+}
+/* Altura: para ver desde más arriba o ponerte a la altura de los organismos */
+function changeHeight(d){
+  if(!renderer.xr.isPresenting){toast('La altura se ajusta con las gafas puestas.');return;}
+  rig.position.y=clamp(rig.position.y+d,-.8,3);vr.dirty=true;
 }
 function focusOn(x,y){
   const q=P3(x,y),wp=new THREE.Vector3(q.x,q.y,q.z).applyMatrix4(world.matrixWorld);
@@ -2460,8 +2563,10 @@ function loop(now){
 
   if(xr){
     if(placePending&&--placePending===0)placePanel();
+    tpMark.visible=false;
     for(const p of pointers)if(p.xr&&p.active){gamepadUpdate(p,dt);updateXRPointer(p,dt);}
     grabUpdate();
+    updatePanelDrag();
   }else controls.update();
   for(const b of emButtons)if(b.userData.pressed>0)b.userData.pressed--;
 
@@ -2480,7 +2585,7 @@ updateUI();drawBG();rebuildWalls();resize();setupVR();drawPanel();
 renderer.setAnimationLoop(loop);
 setTimeout(()=>toast('La vida empieza en R5 como células. Si rompen las paredes, se escaparán por la mesa.'),600);
 window.lab={get S(){return S;},step,startJump,stopJump,emergency,vaccinate,camera,controls,world,rig,drawPanel,vr,music,setMode,focusOn,stageOf,P3,REGIONS,launchShip,
-  startFire,startRain,startPlague,startSwarm,declareWar,makePeace,armTribe,findBuildingAt,destroyBuilding,setSpeed,PROF};
+  startFire,startRain,startPlague,startSwarm,declareWar,makePeace,armTribe,findBuildingAt,destroyBuilding,setSpeed,PROF,smashWalls,teleportTarget,computeHit,RECTS};
 </script>
 </body>
 </html>
