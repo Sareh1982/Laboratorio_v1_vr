@@ -36,8 +36,9 @@ body{background:var(--bg);color:var(--ink);font:15px/1.45 system-ui,-apple-syste
   <div class="help">
     <b>En el PC:</b> clic izquierdo usa la herramienta (con Observar, Añadir, Vacuna y Virus, arrastrar mueve la vista) ·
     clic derecho + arrastrar gira la cámara · rueda acerca · doble clic centra la vista en ese punto · <b>Espacio</b> pausa.<br>
-    <b>En VR:</b> gatillo = herramienta y botones · <b>grip apuntando a un organismo = pinzas</b> (grip en el vacío = agarrar el mundo) ·
-    stick izquierdo camina · stick derecho gira y vuela · A/X panel · B/Y pausa · pulsar stick = volver al inicio.<br>
+    <b>En VR:</b> gatillo = herramienta y botones · <b>grip sobre un organismo = pinzas</b> · grip sobre el panel = moverlo ·
+    stick izquierdo camina · stick derecho ← → gira 45° · stick derecho ↑ = arco de teletransporte (suelta para ir) ·
+    los dos grips a la vez = agrandar o encoger · A/X panel · B/Y pausa · pulsar stick = volver al inicio.<br>
     <b>Música:</b> pon <code>musica.mp3</code> (y si quieres <code>tension.mp3</code>) junto a este archivo.
   </div>
 </aside>
@@ -1878,8 +1879,8 @@ const TOOL_HELP={
 };
 const VR_HELP=[
   '🎯 Gatillo: usar la herramienta y pulsar botones',
-  '✊ Grip: sobre el panel lo mueves · sobre un ser, pinzas · en el vacío, agarrar el mundo',
-  '🕹️ Izquierdo: caminar · Derecho ← →: girar · ↑ apunta y suelta: teletransporte',
+  '✊ Grip: sobre el panel lo mueves · sobre un ser, pinzas',
+  '🕹️ Izquierdo: caminar · Derecho ← →: girar 45° · ↑ arco y suelta: teletransporte',
   '👊 Golpea edificios o muros con el mando para derribarlos',
   '✊✊ Grip con las dos manos: encoger o agrandar el laboratorio',
   '🅰️ A/X: panel · 🅱️ B/Y: pausa · pulsar stick: volver al inicio',
@@ -2334,7 +2335,8 @@ function handSmash(ptr,dt){
 function updateXRPointer(ptr,dt){
   updateXRRay(ptr);handSmash(ptr,dt);computeHit(ptr);pointerMove(ptr);
   ptr.laser.scale.z=ptr.hit?ptr.hit.dist:2;
-  ptr.cursor.visible=!!ptr.hit;if(ptr.hit)ptr.cursor.position.copy(ptr.hit.point);
+  ptr.laser.visible=!ptr.aiming;                 // mientras apuntas el teletransporte se ve el arco, no el láser
+  ptr.cursor.visible=!!ptr.hit&&!ptr.aiming;if(ptr.hit)ptr.cursor.position.copy(ptr.hit.point);
   const open=ptr.down||ptr.carry?.015:.12;ptr.arms[0].rotation.y=open;ptr.arms[1].rotation.y=-open;
   ptr.laser.material.color.set(ptr.tpAim?'#5ef0c8':panelDrag.ptr===ptr?'#ffffff':ptr.carry?'#fbd38d':mode==='virus'?'#B5F03C':mode==='vax'?'#FFD34D':mode==='grab'?'#fbd38d':mode==='erase'||mode==='smash'?'#e0603f':'#9ae6ff');
   if(ptr.tpAim){
@@ -2355,10 +2357,8 @@ function grabEnd(ptr){if(!grab.hands.delete(ptr))return;grabBaseline();}
 function grabUpdate(){
   if(!grab.hands.size)return;
   const e=[...grab.hands];
-  if(e.length===1){
-    const [p,h]=e[0];
-    rig.position.copy(grab.rigPos).add(_v1.copy(h.local).sub(p.ctrl.position).applyQuaternion(rig.quaternion));
-  }else{
+  // con una sola mano no se mueve nada (así no te desplazas sin querer); con las dos, escalas
+  if(e.length>=2){
     const s=clamp(grab.worldScale*e[0][0].ctrl.position.distanceTo(e[1][0].ctrl.position)/grab.d0,.12,5);
     world.scale.setScalar(s);
     world.position.copy(grab.pivot).add(_v2.copy(grab.worldPos).sub(grab.pivot).multiplyScalar(s/grab.worldScale));
@@ -2391,19 +2391,40 @@ const tpMark=new THREE.Group();
   for(const m of [m1,m2,m3]){m.renderOrder=35;tpMark.add(m);}
 }
 tpMark.visible=false;scene.add(tpMark);
-const _tv=new THREE.Vector3(),_tl=new THREE.Vector3();
-/* ¿A dónde te llevaría el teletransporte? Al suelo donde apuntas; si apuntas a la mesa o a una
-   encimera, al borde más cercano, mirando hacia ese punto. */
-function teleportTarget(ptr){
+/* Arco del teletransporte (como en la mayoría de juegos de Quest): una parábola que sale del mando */
+const ARC_N=48;
+const arcGeo=new THREE.BufferGeometry();arcGeo.setAttribute('position',new THREE.Float32BufferAttribute(new Float32Array(ARC_N*3),3));
+const arcLine=new THREE.Line(arcGeo,new THREE.LineDashedMaterial({color:'#5ef0c8',dashSize:.06,gapSize:.035,transparent:true,opacity:.9,depthTest:false}));
+arcLine.renderOrder=34;arcLine.visible=false;arcLine.frustumCulled=false;scene.add(arcLine);
+const _tv=new THREE.Vector3(),_tl=new THREE.Vector3(),_ap=new THREE.Vector3(),_aq=new THREE.Vector3();
+/* Lanza la parábola y devuelve dónde cae: en el suelo de la sala, o sobre la mesa central */
+function castArc(ptr){
   world.updateMatrixWorld(true);
-  const floorY=world.position.y+FY*world.scale.y;
-  let look=null,pt=null;
-  if(ptr.hit&&ptr.hit.kind==='table'){look=ptr.hit.point.clone();pt=ptr.hit.point.clone();}
-  else{
-    const d=ptr.ray.direction,o=ptr.ray.origin;if(d.y>-0.05)return null;
-    const t=(floorY-o.y)/d.y;if(t<=0||t>25)return null;
-    pt=o.clone().addScaledVector(d,t);
+  const floorY=world.position.y+FY*world.scale.y,tableY=world.position.y;
+  const o=ptr.ray.origin,d=ptr.ray.direction,v=6.5,g=9.8,pos=arcGeo.attributes.position.array;
+  _ap.copy(o);let hit=null,onTable=false,n=0;
+  for(let i=0;i<ARC_N;i++){
+    const t=i*.035;
+    _aq.set(o.x+d.x*v*t,o.y+d.y*v*t-.5*g*t*t,o.z+d.z*v*t);
+    pos[i*3]=_aq.x;pos[i*3+1]=_aq.y;pos[i*3+2]=_aq.z;n=i+1;
+    // ¿cruza el tablero de la mesa?
+    if(_ap.y>=tableY&&_aq.y<tableY){
+      const f=(_ap.y-tableY)/(_ap.y-_aq.y),cx=_ap.x+(_aq.x-_ap.x)*f,cz=_ap.z+(_aq.z-_ap.z)*f;
+      _tl.set(cx,tableY,cz);world.worldToLocal(_tl);
+      if(Math.abs(_tl.x)<MAIN.w*K/2+.12&&Math.abs(_tl.z)<MAIN.h*K/2+.12){hit=new THREE.Vector3(cx,tableY,cz);onTable=true;pos[i*3]=cx;pos[i*3+1]=tableY;pos[i*3+2]=cz;break;}
+    }
+    if(_aq.y<=floorY){const f=(_ap.y-floorY)/Math.max(1e-6,_ap.y-_aq.y),cx=_ap.x+(_aq.x-_ap.x)*f,cz=_ap.z+(_aq.z-_ap.z)*f;
+      hit=new THREE.Vector3(cx,floorY,cz);pos[i*3]=cx;pos[i*3+1]=floorY;pos[i*3+2]=cz;break;}
+    _ap.copy(_aq);
   }
+  arcGeo.setDrawRange(0,n);arcGeo.attributes.position.needsUpdate=true;arcLine.computeLineDistances();
+  return hit?{point:hit,onTable}:null;
+}
+/* ¿A dónde te llevaría el teletransporte? Al suelo donde cae el arco; si cae en la mesa,
+   al borde más cercano, mirando hacia ese punto. */
+function teleportTarget(ptr){
+  const a=castArc(ptr);if(!a)return null;
+  let look=a.onTable?a.point.clone():null,pt=a.point.clone();
   // pasar a coordenadas del mundo, apartarse de la mesa y de las encimeras, y no salir de la sala
   _tl.copy(pt);world.worldToLocal(_tl);
   const mx=MAIN.w*K/2+.5,mz=MAIN.h*K/2+.5;
@@ -2429,16 +2450,21 @@ function gamepadUpdate(ptr,dt){
   const gp=ptr.source&&ptr.source.gamepad;if(!gp)return;
   const dz=v=>Math.abs(v)<.18?0:v,x=dz(gp.axes[2]||0),y=dz(gp.axes[3]||0);
   if(ptr.source.handedness==='left'){
-    // caminar: hacia donde miras, con arranque suave
-    const {yaw}=headPose(),tx=(-Math.sin(yaw)*-y+Math.cos(yaw)*x)*1.4,tz=(-Math.cos(yaw)*-y-Math.sin(yaw)*x)*1.4;
+    // caminar: hacia donde miras (adelante/atrás y de lado), con arranque suave
+    const {yaw}=headPose(),tx=(-Math.sin(yaw)*-y+Math.cos(yaw)*x)*1.5,tz=(-Math.cos(yaw)*-y-Math.sin(yaw)*x)*1.5;
     ptr.vx=(ptr.vx||0)+(tx-(ptr.vx||0))*Math.min(1,dt*8);ptr.vz=(ptr.vz||0)+(tz-(ptr.vz||0))*Math.min(1,dt*8);
     rig.position.x+=ptr.vx*dt;rig.position.z+=ptr.vz*dt;
   }else{
-    // girar a saltos (izquierda/derecha) y teletransporte (empujar hacia delante, apuntar y soltar)
-    if(Math.abs(x)>.7&&!ptr.snap&&!ptr.tpAim){ptr.snap=true;snapTurn(x>0?-Math.PI/6:Math.PI/6);}
+    // estándar de Quest: ← → gira 45° de golpe; ↑ muestra el arco y al soltar te teletransporta
+    const horiz=Math.abs(x)>.7&&Math.abs(y)<.55,fwd=y<-.6&&Math.abs(x)<.6;
+    if(horiz&&!ptr.snap&&!ptr.aiming){ptr.snap=true;snapTurn(x>0?-Math.PI/4:Math.PI/4);buzz(ptr,.15,15);}
     if(Math.abs(x)<.3)ptr.snap=false;
-    if(y<-.6){ptr.tpAim=teleportTarget(ptr)||ptr.tpAim||null;}
-    else if(ptr.tpAim&&y>-.3){const tp=teleportTarget(ptr)||ptr.tpAim;ptr.tpAim=null;doTeleport(tp);buzz(ptr,.3,30);}
+    if(fwd||(ptr.aiming&&y<-.3)){ptr.aiming=true;ptr.tpAim=teleportTarget(ptr);arcLine.visible=true;arcLine.material.color.set(ptr.tpAim?'#5ef0c8':'#e0603f');}
+    else if(ptr.aiming){
+      ptr.aiming=false;arcLine.visible=false;
+      if(ptr.tpAim){doTeleport(ptr.tpAim);buzz(ptr,.3,30);}
+      ptr.tpAim=null;
+    }
   }
   const pressed=i=>!!(gp.buttons[i]&&gp.buttons[i].pressed),edge=i=>pressed(i)&&!ptr.prev[i];
   if(edge(4)){vr.show=!vr.show;if(vr.show&&!vr.placed)placePanel();}
