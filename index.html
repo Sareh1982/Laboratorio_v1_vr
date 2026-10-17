@@ -1042,7 +1042,7 @@ function addPlants(z,n){
   for(let k=0;k<n*6&&placed<n;k++){const x=rand(R.x*T,(R.x+R.w)*T),y=rand(R.y*T,(R.y+R.h)*T);if(!blocked(x,y)&&zoneAt(x,y)===z){S.plants.push({x,y,z,dead:false});placed++;}}
 }
 function fresh(){
-  S={tick:0,nextId:1,creatures:[],plants:[],tribes:{},tribeSeq:0,env:RECTS.map(()=>({...AMB})),food:1,mut:1,vis:1.6,cap:1500,breaks:0,births:0,nextImm:35,ships:[],ruins:[],
+  S={tick:0,nextId:1,creatures:[],plants:[],tribes:{},tribeSeq:0,env:RECTS.map(()=>({...AMB})),food:1,mut:1,vis:1.6,cap:700,breaks:0,births:0,nextImm:35,ships:[],ruins:[],
     fires:[],floods:[],swarms:[],shots:[],plagueSeq:0,sickN:0,vStrain:1,evo:1,lakes:[],wild:[],meteors:[],daynight:true};
   waterT.fill(0);scorch.fill(0);
   buildRecipients();computeZones();
@@ -1254,13 +1254,13 @@ const ROOM_W=16,ROOM_D=14,ROOM_H=4.2,FY=-TABLE_Y,RZ0=0;
   const floor=add(new THREE.Mesh(new THREE.PlaneGeometry(ROOM_W,ROOM_D).rotateX(-Math.PI/2),new THREE.MeshStandardMaterial({color:'#3b444b',roughness:.9})));
   floor.position.set(0,FY,RZ0);
   const tiles=add(new THREE.GridHelper(ROOM_W,ROOM_W*2,'#4d5860','#4d5860'));tiles.position.set(0,FY+.002,RZ0);tiles.scale.z=ROOM_D/ROOM_W;
-  const wallMat=new THREE.MeshStandardMaterial({color:'#c9d2d8',roughness:.95});
+  const wallMat=new THREE.MeshStandardMaterial({color:'#69747c',roughness:.95});
   for(const [w,x,z,ry] of [[ROOM_W,0,RZ0-ROOM_D/2,0],[ROOM_W,0,RZ0+ROOM_D/2,Math.PI],[ROOM_D,-ROOM_W/2,RZ0,Math.PI/2],[ROOM_D,ROOM_W/2,RZ0,-Math.PI/2]]){
     const m=add(new THREE.Mesh(new THREE.PlaneGeometry(w,ROOM_H),wallMat));m.position.set(x,FY+ROOM_H/2,z);m.rotation.y=ry;
   }
-  const ceil=add(new THREE.Mesh(new THREE.PlaneGeometry(ROOM_W,ROOM_D).rotateX(Math.PI/2),new THREE.MeshStandardMaterial({color:'#e3e8eb'})));
+  const ceil=add(new THREE.Mesh(new THREE.PlaneGeometry(ROOM_W,ROOM_D).rotateX(Math.PI/2),new THREE.MeshStandardMaterial({color:'#4f585f'})));
   ceil.position.set(0,FY+ROOM_H,RZ0);
-  const lampMat=new THREE.MeshBasicMaterial({color:'#fbfdff'});
+  const lampMat=new THREE.MeshBasicMaterial({color:'#b9c4cb'});
   for(let i=-1;i<=1;i++)for(let j=-1;j<=1;j+=2){const l=add(new THREE.Mesh(new THREE.BoxGeometry(2.4,.04,.5),lampMat));l.position.set(i*4.5,FY+ROOM_H-.03,RZ0+j*2.5);}
   const winMat=new THREE.MeshBasicMaterial({color:'#9fd0ea'});
   for(let i=-2;i<=2;i++){const w=add(new THREE.Mesh(new THREE.PlaneGeometry(2,1.4),winMat));w.position.set(i*3,FY+2.3,RZ0-ROOM_D/2+.01);}
@@ -1526,7 +1526,7 @@ function showVrToast(m){
   vrToast.msg=m;
   if(!renderer.xr.isPresenting)return;
   const e=textTex(m,'#EAF2F4','rgba(12,20,26,.92)');
-  vrToast.sprite.material.map=e.tex;vrToast.sprite.material.needsUpdate=true;
+  if(vrToast.sprite.material.map!==e.tex){vrToast.sprite.material.map=e.tex;vrToast.sprite.material.needsUpdate=true;}
   const {pos,yaw}=headPose();
   vrToast.sprite.position.set(pos.x-Math.sin(yaw)*1.1,pos.y+.25,pos.z-Math.cos(yaw)*1.1);
   vrToast.sprite.scale.set(.06*e.aspect,.06,1);
@@ -2112,7 +2112,7 @@ function render3D(dt){
   flushPools(dynPools);
   flushLabels();
 
-  if(vrToast.msg&&renderer.xr.isPresenting&&!vrToast.sprite.visible)showVrToast(vrToast.msg);
+  if(vrToast.msg&&renderer.xr.isPresenting)showVrToast(vrToast.msg);   // el aviso te sigue: no lo atraviesas al andar
   vrToast.sprite.visible=!!vrToast.msg&&renderer.xr.isPresenting;
 }
 
@@ -2758,6 +2758,7 @@ function gamepadUpdate(ptr,dt){
     ptr.vx=(ptr.vx||0)+(tx-(ptr.vx||0))*Math.min(1,dt*8);ptr.vz=(ptr.vz||0)+(tz-(ptr.vz||0))*Math.min(1,dt*8);ptr.vy=(ptr.vy||0)+(ty-(ptr.vy||0))*Math.min(1,dt*8);
     rig.position.x+=ptr.vx*dt;rig.position.z+=ptr.vz*dt;
     if(vr.fly)rig.position.y=clamp(rig.position.y+ptr.vy*dt,-.8,ROOM_H-1.9);
+    keepHeadInRoom();
   }else{
     // estándar de Quest: ← → gira 45° de golpe; ↑ muestra el arco y al soltar te teletransporta
     const horiz=Math.abs(x)>.7&&Math.abs(y)<.55,fwd=y<-.6&&Math.abs(x)<.6;
@@ -2775,6 +2776,14 @@ function gamepadUpdate(ptr,dt){
   if(edge(5))setSpeed(speed?0:DEFAULT_SPEED);
   if(edge(3))homeVR();
   ptr.prev=gp.buttons.map(b=>b.pressed);
+}
+/* que la cabeza no atraviese paredes, techo ni lámparas (era la "zona blanca" al moverse) */
+const _kh=new THREE.Vector3();
+function keepHeadInRoom(){
+  const {pos}=headPose();_kh.copy(pos);world.worldToLocal(_kh);
+  const x=clamp(_kh.x,-ROOM_W/2+.35,ROOM_W/2-.35),z=clamp(_kh.z,RZ0-ROOM_D/2+.35,RZ0+ROOM_D/2-.35),y=clamp(_kh.y,FY+.25,FY+ROOM_H-.35);
+  if(x===_kh.x&&y===_kh.y&&z===_kh.z)return;
+  _kh.set(x,y,z);world.localToWorld(_kh);rig.position.add(_kh.sub(pos));
 }
 function snapTurn(a){
   const {pos}=headPose();
