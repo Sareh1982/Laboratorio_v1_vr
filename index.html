@@ -95,6 +95,7 @@ const VOID=4;                                      // tipo de casilla: vacío en
 const wallT=new Uint8Array(TW*TH),wallHP=new Float32Array(TW*TH),zone=new Int8Array(TW*TH),openF=new Uint8Array(TW*TH),inRect=new Int8Array(TW*TH);
 const WALL_HP=[0,140,220,80,1e9];
 const scorch=new Uint32Array(TW*TH);   // hasta qué ciclo la tierra está quemada (no brota nada)
+const waterT=new Uint8Array(TW*TH);    // casillas con agua (lagos): solo las cruzan los que nadan
 const RECTS=[];
 (function(){const w=35,h=32,gap=4,mw=MAIN.w/T,mh=MAIN.h/T,x0=Math.floor((mw-(3*w+2*gap))/2),y0=Math.floor((mh-(2*h+gap))/2);
   for(let r=0;r<2;r++)for(let c=0;c<3;c++)RECTS.push({x:x0+c*(w+gap),y:y0+r*(h+gap),w,h});
@@ -109,7 +110,7 @@ const SYL=['ka','ru','mo','te','li','za','no','vi','sha','ko','ar','en','ul','to
 const LV=[0,0,80,300,800,2000,4000,7000,11000,16000,23000];
 const MAX_LV=10;
 const SMART=0.45;
-const KINDS={tec:{name:'Tecnológica',icon:'🔬'},eco:{name:'Ecologista',icon:'🌳'},des:{name:'Destructora',icon:'💣'}};
+const KINDS={tec:{name:'Tecnológica',icon:'🔬'},eco:{name:'Ecologista',icon:'🌳'},des:{name:'Destructora',icon:'💣'},mar:{name:'Marinera',icon:'⚓'}};
 let S=null,zonesDirty=true,bgDirty=true,wallsDirty=true,roadsDirty=true;
 const hooks={event:()=>{}};
 const cgrid=Array.from({length:GW*GH},()=>[]),pgrid=Array.from({length:GW*GH},()=>[]);
@@ -264,9 +265,13 @@ function giveBirth(f,E){
   f.mateG=null;f.mateM=null;f.cd=f.type==='p'?140:320;
   return out;
 }
+/* ¿Puede nadar? Las células y los peces sí, y también los pueblos marineros. */
+const swims=c=>(!c.tribe&&!c.herd&&c.g.intel<0.32)||(c.tribe&&S.tribes[c.tribe]&&S.tribes[c.tribe].kind==='mar');
 function moveC(c,mv,brk){
   const nx=c.x+Math.cos(c.dir)*mv,ny=c.y+Math.sin(c.dir)*mv;
   if(nx<1||ny<1||nx>W-1||ny>H-1){c.dir+=Math.PI*0.7;return;}
+  const wi=tIdx(nx,ny);
+  if(wi>=0&&waterT[wi]&&!waterT[tIdx(c.x,c.y)]&&!swims(c)){c.dir+=Math.PI*(0.5+Math.random());return;}   // la orilla
   if(blocked(nx,ny)){
     const ti=tIdx(nx,ny);
     if(wallT[ti]===VOID)c.dir+=Math.PI*(0.6+Math.random()*0.8);
@@ -312,7 +317,7 @@ function step(){
   for(let n=0;n<FOOD_TRIES*S.food;n++){
     const x=rand(1,W-1),y=rand(1,H-1),i=tIdx(x,y);if(i<0||wallT[i]||scorch[i]>t)continue;
     const z=zone[i];if(pc[z]>=(z?650:OUT_CAP))continue;
-    const f=z?plantF(S.env[z-1]):OUT_FOOD;
+    const f=waterT[i]?OUT_FOOD*3:z?plantF(S.env[z-1]):OUT_FOOD;   // los lagos están llenos de algas
     if(Math.random()<f){S.plants.push({x,y,z,dead:false});pc[z]++;}
   }
   if(t%5===0&&S.plants.length<9000)for(const id in S.tribes){
@@ -322,6 +327,8 @@ function step(){
     // los árboles también dan comida a su alrededor
     for(const tr of tb.trees||[])if(Math.random()<0.25*S.food){const x=tr.x+rand(-10,10),y=tr.y+rand(-10,10);if(!blocked(x,y))S.plants.push({x,y,z:zoneAt(x,y),dead:false});}
   }
+  if(t%5===0&&S.plants.length<9000)for(const tr of S.wild)if(Math.random()<0.12*S.food){const x=tr.x+rand(-12,12),y=tr.y+rand(-12,12);if(!blocked(x,y))S.plants.push({x,y,z:zoneAt(x,y),dead:false});}
+  if(S.meteors.length)meteorTick();
   if(t%20===0)for(const p of S.plants){if(!p.z)continue;const E=S.env[p.z-1];if((E.temp>58||E.temp<-8||E.rad>7)&&Math.random()<0.15)p.dead=true;}
   if(S.ships.length)shipTick();
   _t=pt('plants',_t);
@@ -344,6 +351,8 @@ function step(){
       let ok=false;for(let k=0;k<12&&!ok;k++){const nx=c.x+rand(-7,7),ny=c.y+rand(-7,7);if(nx>1&&ny>1&&nx<W-1&&ny<H-1&&!blocked(nx,ny)){c.x=nx;c.y=ny;ok=true;}}
       if(!ok){kill(c,'aplastado por una pared');pop--;continue;}
     }
+    // un ser de tierra que ha quedado dentro de un lago intenta salir… y a veces se ahoga
+    if(zi>=0&&waterT[zi]&&!c.held&&!swims(c)&&Math.random()<0.0015){kill(c,'ahogado');pop--;continue;}
     c.z=zoneAt(c.x,c.y);const E=envOf(c.z);
     if(c.inc>0){c.inc--;if(c.inc===0)turnZombie(c);}
     if(c.zombie){if(!c.held&&zombieStep(c,E))pop--;continue;}
@@ -487,7 +496,8 @@ function makeLook(type,base){
 }
 function newTribe(type,x,y,kind,look){
   const id=++S.tribeSeq;
-  const k=kind||pick(['tec','tec','eco','eco','des','des','tec']);
+  // junto a un lago, casi siempre nace un pueblo marinero
+  const k=kind||(nearWater(x,y,55)&&Math.random()<0.75?'mar':pick(['tec','tec','eco','eco','des','des','tec']));
   return S.tribes[id]={id,name:tribeName(),type,kind:k,hx:x,hy:y,born:S.tick,n:0,e:0,iq:0,built:0,R:7,col:TCOL[id%TCOL.length],r2:(7*T+4)**2,
     know:0,lvl:1,farms:[],corral:null,herd:0,war:0,warSince:0,wins:0,parent:0,lastCol:S.tick,lastShip:S.tick,buildings:[],trees:[],
     arms:0,cures:[],cureProg:{},look:makeLook(type,look)};
@@ -496,10 +506,12 @@ function newTribe(type,x,y,kind,look){
 /* ---- Pueblos: qué construyen según su era y su carácter ---- */
 const BSCALE=1.5;   // los edificios se dibujan y se separan a esta escala (en proporción a los humanos)
 const BSIZE={choza:6,casa:9,granja:12,molino:7,iglesia:13,torre:7,fabrica:13,rascacielos:10,aerogenerador:6,panel:7,bunker:10,cohete:12,biocupula:18,
-  pozo:4,mercado:10,cuartel:11,bomberos:10,hospital:11,universidad:13,parque:12,canon:6,antena:5,bloque:9,invernadero:12};
+  pozo:4,mercado:10,cuartel:11,bomberos:10,hospital:11,universidad:13,parque:12,canon:6,antena:5,bloque:9,invernadero:12,
+  muelle:7,palafito:7,faro:6,astillero:12};
 /* Altura aproximada (en unidades, antes de BSCALE): para saber si la mano "toca" un edificio */
 const BHEIGHT={choza:7,casa:11,granja:13,molino:16,iglesia:25,torre:32,fabrica:20,rascacielos:56,aerogenerador:32,panel:3,bunker:6,cohete:22,biocupula:10,
-  pozo:6,mercado:7,cuartel:9,bomberos:14,hospital:12,universidad:16,parque:4,canon:5,antena:30,bloque:26,invernadero:7};
+  pozo:6,mercado:7,cuartel:9,bomberos:14,hospital:12,universidad:16,parque:4,canon:5,antena:30,bloque:26,invernadero:7,
+  muelle:3,palafito:10,faro:26,astillero:12};
 /* Cada tipo de sociedad construye su propia ciudad:
    🔬 tecnológica → metrópolis tipo Nueva York: bloques y muchos rascacielos, asfalto y contaminación
    🌳 ecologista  → campo: casitas dispersas, granjas, molinos, invernaderos, bosques y energía limpia
@@ -507,9 +519,13 @@ const BHEIGHT={choza:7,casa:11,granja:13,molino:16,iglesia:25,torre:32,fabrica:2
 function quota(tb,k){
   const L=tb.lvl,K2=tb.kind;
   switch(k){
-    case 'pozo':return L>=3?1:0;
-    case 'choza':return L>=3&&L<6?(K2==='eco'?8:6):0;
-    case 'casa':return L>=5?(K2==='eco'?Math.min(24,5+(L-5)*4+Math.floor(tb.n/10)):K2==='tec'?(L>=7?4:8):Math.min(10,3+(L-5)*2)):0;
+    case 'muelle':return K2==='mar'&&L>=3?Math.min(3,1+Math.floor((L-3)/3)):0;
+    case 'palafito':return K2==='mar'&&L>=3?Math.min(14,3+Math.floor(L*1.4)):0;
+    case 'faro':return K2==='mar'&&L>=6?1:0;
+    case 'astillero':return K2==='mar'&&L>=7?1:0;
+    case 'pozo':return L>=3&&K2!=='mar'?1:0;
+    case 'choza':return L>=3&&L<6&&K2!=='mar'?(K2==='eco'?8:6):0;
+    case 'casa':return L>=5?(K2==='mar'?3:K2==='eco'?Math.min(24,5+(L-5)*4+Math.floor(tb.n/10)):K2==='tec'?(L>=7?4:8):Math.min(10,3+(L-5)*2)):0;
     case 'torre':return L>=5?1:0;
     case 'mercado':return L>=5?(L>=7?2:1):0;
     case 'granja':return L>=6?(K2==='eco'?5:tb.type==='d'?2:1):0;
@@ -534,16 +550,18 @@ function quota(tb,k){
   }
   return 0;
 }
-const BORDER=['torre','pozo','choza','casa','mercado','granja','molino','iglesia','cuartel','canon','bomberos','hospital','bloque','rascacielos','fabrica',
+const WATER_B={muelle:4,palafito:12,faro:6,astillero:6};   // necesitan agua a esta distancia
+const BORDER=['torre','muelle','palafito','faro','astillero','pozo','choza','casa','mercado','granja','molino','iglesia','cuartel','canon','bomberos','hospital','bloque','rascacielos','fabrica',
   'invernadero','universidad','aerogenerador','bunker','panel','parque','antena','cohete','biocupula'];
 /* distancia a la plaza a la que construye cada estilo: la metrópolis, apiñada; el campo, disperso */
-const SPREAD={tec:[12,22,8],eco:[20,48,16],des:[14,30,11]};
+const SPREAD={tec:[12,22,8],eco:[20,48,16],des:[14,30,11],mar:[12,44,14]};
 const hasB=(tb,k)=>tb.buildings.some(b=>b.k===k);
-function placeNear(tb,size,list,minD,maxD){
+function placeNear(tb,size,list,minD,maxD,needWater=0){
   const hz=zoneAt(tb.hx,tb.hy),reg=regionOf(tb.hx,tb.hy);
   for(let k=0;k<16;k++){
     const a=rand(0,6.283),d=rand(minD,maxD),x=tb.hx+Math.cos(a)*d,y=tb.hy+Math.sin(a)*d;
-    if(blocked(x,y)||zoneAt(x,y)!==hz||regionOf(x,y)!==reg)continue;
+    if(blocked(x,y)||zoneAt(x,y)!==hz||regionOf(x,y)!==reg||waterT[tIdx(x,y)])continue;
+    if(needWater&&!nearWater(x,y,needWater))continue;
     let ok=true;
     // sin pisar edificios de ningún pueblo (también de los vecinos)
     forBuildingsNear(x,y,size*0.6*BSCALE,()=>{ok=false;});
@@ -562,14 +580,24 @@ function growTown(tb){
     if(built>=(tb.kind==='tec'?2:1))break;
     const have=tb.buildings.filter(b=>b.k===k).length;
     if(have>=quota(tb,k))continue;
+    tb.fail=tb.fail||{};if(tb.fail[k]&&S.tick-tb.fail[k]<2000)continue;   // si no cupo hace poco, no lo reintenta todavía
     const sp=SPREAD[tb.kind]||SPREAD.tec,near=k==='rascacielos'?.85:k==='bloque'?.7:1;
-    const p=k==='torre'?{x:tb.hx,y:tb.hy,a:0}:placeNear(tb,BSIZE[k],tb.buildings,sp[0]*near,(sp[1]+tb.lvl*sp[2])*near);
+    let p=k==='torre'?{x:tb.hx,y:tb.hy,a:0}:placeNear(tb,BSIZE[k],tb.buildings,sp[0]*near,(sp[1]+tb.lvl*sp[2])*near*(WATER_B[k]?1.6:1),WATER_B[k]||0);
+    if(!p){tb.fail[k]=S.tick;continue;}
+    if(WATER_B[k]){const w=waterDir(p.x,p.y,WATER_B[k]+8);if(w!==null)p.a=w;}   // mirando al agua
     if(p){tb.buildings.push({k,x:p.x,y:p.y,a:p.a,hp:BSIZE[k],v:Math.floor(Math.random()*3)});built++;roadsDirty=true;}
   }
   // árboles: los ecologistas plantan bosques; los demás, algunos
   const treeMax=tb.kind==='eco'?(tb.lvl>=3?10+tb.lvl*5:0):(tb.lvl>=6&&tb.kind==='tec'?4:0);
-  if(tb.trees.length<treeMax){const p=placeNear(tb,3,tb.trees,10,34+tb.lvl*12);if(p)tb.trees.push({x:p.x,y:p.y,s:rand(.8,1.3)});}
+  if(tb.trees.length<treeMax){const p=placeNear(tb,3,tb.trees,10,34+tb.lvl*12);if(p)tb.trees.push({x:p.x,y:p.y,s:rand(.8,1.3),sp:pickSpecies(p.x,p.y,tb.kind)});}
   // destructores: talan bosques ajenos y contaminan
+  // marineros y ecologistas excavan sus propios embalses y estanques
+  if((tb.kind==='mar'||tb.kind==='eco')&&tb.lvl>=5&&(tb.ponds||0)<(tb.kind==='mar'?3:1)&&Math.random()<0.04){
+    const p=placeNear(tb,20,tb.buildings,30,60+tb.lvl*8);
+    if(p){addLake(p.x,p.y,rand(14,22));tb.ponds=(tb.ponds||0)+1;hooks.event('pond',tb);}
+  }
+  // los destructores talan también el bosque silvestre
+  if(tb.kind==='des'&&tb.lvl>=5&&S.wild.length){const i=S.wild.findIndex(tr=>nearTribe(tb,tr.x,tr.y));if(i>=0&&Math.random()<0.6)S.wild.splice(i,1);}
   if(tb.kind==='des'&&tb.lvl>=6){
     for(const oid in S.tribes){const o=S.tribes[oid];if(o===tb||!o.trees.length)continue;
       const i=o.trees.findIndex(tr=>(tr.x-tb.hx)**2+(tr.y-tb.hy)**2<220*220);
@@ -635,6 +663,8 @@ function disasterTick(t){
       nearby(f.x,f.y,7,o=>{if(!o.dead&&(o.x-f.x)**2+(o.y-f.y)**2<49&&Math.random()<0.12)kill(o,'quemado');});
       forBuildingsNear(f.x,f.y,5,(tb,i,b)=>{fuel+=4;b.hp=(b.hp??BSIZE[b.k])-0.45;if(b.hp<=0){destroyBuilding(tb,i,'fuego');born.push({x:b.x,y:b.y,t:0,life:rand(500,700)});}});
       for(const id in S.tribes){const tr=S.tribes[id].trees;for(let i=tr.length-1;i>=0;i--)if((tr[i].x-f.x)**2+(tr[i].y-f.y)**2<100){born.push({x:tr[i].x,y:tr[i].y,t:0,life:rand(450,650)});tr.splice(i,1);fuel+=5;}}
+      for(let i=S.wild.length-1;i>=0;i--){const tr=S.wild[i];if((tr.x-f.x)**2+(tr.y-f.y)**2<110){born.push({x:tr.x,y:tr.y,t:0,life:rand(450,650)});S.wild.splice(i,1);fuel+=5;}}
+      if(waterT[tIdx(f.x,f.y)])f.out=true;   // el fuego no arde sobre el agua
       if(fuel)f.life=Math.min(900,f.life+fuel*3);
       // se extiende: con combustible cerca, casi seguro; sin él, a veces salta igualmente
       const crowd=S.fires.length+born.length;
@@ -642,12 +672,14 @@ function disasterTick(t){
         const a=rand(0,6.283),d=rand(9,20),nx=f.x+Math.cos(a)*d,ny=f.y+Math.sin(a)*d,ni=tIdx(nx,ny);
         if(ni>=0&&scorch[ni]>t+1800){}   // no salta a lo recién quemado: el frente avanza hacia lo que aún no ha ardido
         else
-        if(!blocked(nx,ny)&&regionOf(nx,ny)===regionOf(f.x,f.y))born.push({x:nx,y:ny,t:0,life:rand(320,520)});
+        if(!blocked(nx,ny)&&!waterT[ni]&&regionOf(nx,ny)===regionOf(f.x,f.y))born.push({x:nx,y:ny,t:0,life:rand(320,520)});
       }
-      // bomberos: los pueblos desde la Ciudad-estado apagan fuegos cerca de casa (cuesta)
-      for(const id in S.tribes){const tb=S.tribes[id];if(tb.lvl<5||!nearTribe(tb,f.x,f.y))continue;
-        const p=0.0012*(tb.lvl-4)*(tb.kind==='eco'?1.4:1)*(hasB(tb,'bomberos')?2:1);
-        if(Math.random()<p){f.out=true;if(Math.random()<0.15)hooks.event('fireout',tb);break;}}
+      // bomberos: desde la Ciudad-estado los pueblos apagan los fuegos que les amenazan.
+      // Cuanto más avanzados, más lejos llegan y más rápido actúan (con parque de bomberos, mucho más).
+      for(const id in S.tribes){const tb=S.tribes[id];if(tb.lvl<5||!nearTribe(tb,f.x,f.y,tb.lvl>=8?60:20))continue;
+        const base=tb.lvl>=8?0.03:tb.lvl>=7?0.016:0.004*(tb.lvl-4);
+        const p=base*(tb.kind==='eco'||tb.kind==='mar'?1.4:1)*(hasB(tb,'bomberos')?2.5:1)*(nearWater(f.x,f.y,40)?1.5:1);
+        if(Math.random()<p){f.out=true;hooks.event('fireout',tb,f);break;}}
       for(const fl of S.floods)if((fl.t<380||fl.lvl>0.15)&&(fl.x-f.x)**2+(fl.y-f.y)**2<fl.r*fl.r)f.out=true;
       if(f.t>=f.life)f.out=true;
     }
@@ -665,6 +697,9 @@ function disasterTick(t){
         for(const id in S.tribes){const tb=S.tribes[id];if(!tb.farms.length||!nearTribe(tb,fl.x,fl.y,fl.r))continue;
           const before=tb.farms.length;tb.farms=tb.farms.filter(i=>{const x=(i%TW+.5)*T,y=(((i/TW)|0)+.5)*T;return (x-fl.x)**2+(y-fl.y)**2>fl.r*fl.r||Math.random()>0.03*dike;});
           if(tb.farms.length!==before)bgDirty=true;}
+      }
+      if(fl.t>=fl.dur&&!fl.done&&Math.random()<0.35){   // a veces el agua se queda estancada: nace un lago
+        addLake(fl.x,fl.y,fl.r*rand(.35,.55));hooks.event('lake',fl);
       }
       if(fl.t>=fl.dur){fl.done=true;for(let k=0;k<50;k++){const a=rand(0,6.28),d=rand(0,fl.r),x=fl.x+Math.cos(a)*d,y=fl.y+Math.sin(a)*d;if(!blocked(x,y))S.plants.push({x,y,z:zoneAt(x,y),dead:false});}}
     }
@@ -740,6 +775,122 @@ function declareWar(tb){
 function makePeace(tb){const en=S.tribes[tb.war];if(en)en.war=0;tb.war=0;return en;}
 function armTribe(tb){tb.arms=Math.min(3,(tb.arms||0)+1);return tb.arms;}
 
+/* ---- 💧 Lagos: discos de agua que se suman (dos clics juntos = un lago más grande) ---- */
+function nearWater(x,y,r){for(const l of S.lakes)if((l.x-x)**2+(l.y-y)**2<(l.r+r)**2)return true;return false;}
+function waterDir(x,y,r){let best=null,bd=Infinity;for(const l of S.lakes){const d=(l.x-x)**2+(l.y-y)**2;if(d<(l.r+r)**2&&d<bd){bd=d;best=Math.atan2(l.y-y,l.x-x);}}return best;}
+function rebuildWater(){
+  waterT.fill(0);
+  for(const l of S.lakes){
+    const tx0=Math.floor((l.x-l.r)/T),tx1=Math.ceil((l.x+l.r)/T),ty0=Math.floor((l.y-l.r)/T),ty1=Math.ceil((l.y+l.r)/T);
+    for(let ty=Math.max(0,ty0);ty<=Math.min(TH-1,ty1);ty++)for(let tx=Math.max(0,tx0);tx<=Math.min(TW-1,tx1);tx++){
+      const cx=(tx+.5)*T,cy=(ty+.5)*T,i=ty*TW+tx;
+      if((cx-l.x)**2+(cy-l.y)**2<l.r*l.r&&!wallT[i]&&regionOf(cx,cy)===regionOf(l.x,l.y))waterT[i]=1;
+    }
+  }
+  bgDirty=true;
+}
+function addLake(x,y,r){
+  if(blocked(x,y))return false;
+  S.lakes.push({x,y,r});if(S.lakes.length>160)S.lakes.shift();
+  rebuildWater();
+  // lo que queda bajo el agua: casas bajas y árboles desaparecen; el fuego se apaga
+  forBuildingsNear(x,y,r*.7,(tb,i,b)=>{if(!WATER_B[b.k])destroyBuilding(tb,i,'inundado por el lago');});
+  S.wild=S.wild.filter(tr=>(tr.x-x)**2+(tr.y-y)**2>r*r*.8);
+  for(const id in S.tribes){const tb=S.tribes[id];tb.trees=tb.trees.filter(tr=>(tr.x-x)**2+(tr.y-y)**2>r*r*.8);}
+  S.fires=S.fires.filter(f=>!waterT[tIdx(f.x,f.y)]);
+  return true;
+}
+
+/* ---- 🌳 Árboles: 10 especies, según el clima y el sitio ---- */
+const SPECIES=['pino','abeto','roble','abedul','palmera','sauce','cerezo','arce','cipres','baobab'];
+function pickSpecies(x,y,kind){
+  if(nearWater(x,y,25)&&Math.random()<.5)return pick(['sauce','sauce','abedul','palmera']);
+  const z=zoneAt(x,y),E=z?S.env[z-1]:AMB;
+  if(E.temp>32)return pick(['palmera','baobab','cipres']);
+  if(E.temp<10)return pick(['pino','abeto','abedul']);
+  if(kind==='eco')return pick(['roble','cerezo','arce','abedul','sauce','pino']);
+  return pick(SPECIES);
+}
+function plantForest(x,y,n=10,r=24){
+  let made=0;
+  for(let k=0;k<n*3&&made<n;k++){
+    const a=rand(0,6.283),d=Math.sqrt(Math.random())*r,tx=x+Math.cos(a)*d,ty=y+Math.sin(a)*d,i=tIdx(tx,ty);
+    if(i<0||wallT[i]||waterT[i])continue;
+    if(S.wild.some(t=>(t.x-tx)**2+(t.y-ty)**2<30))continue;
+    S.wild.push({x:tx,y:ty,s:rand(.75,1.35),sp:pickSpecies(tx,ty,'eco')});made++;
+  }
+  if(S.wild.length>1200)S.wild.splice(0,S.wild.length-1200);
+  return made;
+}
+
+/* ---- ☄️ Meteorito: cae del cielo, abre un cráter, incendia y provoca mutaciones ---- */
+function startMeteor(x,y){S.meteors.push({x,y,t:0,dur:70});}
+function meteorTick(){
+  for(const m of S.meteors){
+    m.t++;if(m.t<m.dur)continue;m.done=true;
+    const R=30;let hit;
+    while((hit=findBuildingAt(m.x,m.y,R)))destroyBuilding(hit.tb,hit.i,'meteorito');
+    S.wild=S.wild.filter(tr=>(tr.x-m.x)**2+(tr.y-m.y)**2>R*R);
+    for(const id in S.tribes){const tb=S.tribes[id];tb.trees=tb.trees.filter(tr=>(tr.x-m.x)**2+(tr.y-m.y)**2>R*R);}
+    const tx0=Math.floor(m.x/T),ty0=Math.floor(m.y/T);
+    for(let dy=-5;dy<=5;dy++)for(let dx=-5;dx<=5;dx++){const xx=tx0+dx,yy=ty0+dy;if(xx<0||yy<0||xx>=TW||yy>=TH||dx*dx+dy*dy>25)continue;const i=yy*TW+xx;
+      if(wallT[i]&&wallT[i]!==VOID)setWall(i,0);scorch[i]=S.tick+4000;}
+    for(const c of S.creatures){const d2=(c.x-m.x)**2+(c.y-m.y)**2;
+      if(d2<26*26){kill(c,'meteorito');continue;}
+      if(d2<80*80&&Math.random()<.25)applyMut(c,pick(Object.keys(MUTS)));   // polvo cósmico: mutaciones
+    }
+    for(let k=0;k<26&&S.fires.length<FIRE_CAP;k++){const a=rand(0,6.283),d=rand(20,45),fx=m.x+Math.cos(a)*d,fy=m.y+Math.sin(a)*d;if(!blocked(fx,fy))S.fires.push({x:fx,y:fy,t:0,life:rand(400,600)});}
+    S.ruinsCraters=(S.ruinsCraters||[]);S.ruinsCraters.push({x:m.x,y:m.y});if(S.ruinsCraters.length>30)S.ruinsCraters.shift();
+    if(Math.random()<.4)addLake(m.x,m.y,rand(12,18));   // a veces el cráter se llena de agua
+    hooks.event('meteor',m);
+  }
+  S.meteors=S.meteors.filter(m=>!m.done);
+}
+
+/* ---- ⚡ Salto instantáneo: un modelo resumido de lo que pasaría en n ciclos ----
+   No simula a cada ser paso a paso (eso es lo que tarda): hace avanzar la evolución
+   (más generaciones → más inteligencia), el conocimiento y las construcciones de los
+   pueblos, resuelve guerras, pestes y catástrofes, y luego simula unos pocos ciclos
+   de verdad para que todo encaje. */
+function instantJump(n,untilEra=false){
+  const log={};const ev=hooks.event;hooks.event=(k)=>{log[k]=(log[k]||0)+1;};
+  try{
+    const ticks=untilEra?25000:n;let done=0;
+    if(untilEra&&Object.values(S.tribes).length&&Object.values(S.tribes).every(t=>t.lvl>=MAX_LV)){hooks.event=ev;return{done:0,log:{maxed:1}};}
+    const gensPerTick=1/420;
+    const lv0=Object.values(S.tribes).map(t=>t.lvl).reduce((a,b)=>Math.max(a,b),0),tb0=Object.keys(S.tribes).length;
+    while(done<ticks){
+      const chunk=Math.min(500,ticks-done);done+=chunk;S.tick+=chunk;
+      // evolución: cada generación sube la inteligencia; los que habrían muerto los sustituyen sus descendientes
+      const dIq=0.025*(S.evo||1)*gensPerTick*chunk*.7;
+      for(const c of S.creatures){c.g.intel=Math.min(1,c.g.intel+dIq);c.gen+=Math.round(chunk*gensPerTick+Math.random()*.5);
+        c.age=Math.min(c.age,c.maxAge*.6);c.energy=Math.max(c.energy,16*sz(c)**2);c.sick=0;if(c.inc>0)c.inc=1;}
+      // nacimientos: la población crece hasta lo que el laboratorio puede alimentar (crecimiento logístico)
+      const Kc=Math.min(S.cap||CAP,250+S.plants.length*.15),nNow=S.creatures.length;
+      const births=Math.max(0,Math.round(nNow*.7*(1-nNow/Kc)*(chunk/500)));
+      for(let b=0;b<births;b++){
+        const p=pick(S.creatures);if(!p||p.zombie)continue;
+        const x=p.x+rand(-8,8),y=p.y+rand(-8,8);if(blocked(x,y))continue;
+        const g=childGenome(p.g,null,envOf(p.z)),k=mkC(p.type,Math.random()<.5?'f':'m',x,y,g,p.gen+1,14*g.size*g.size);
+        k.mut=inheritMut(p.mut,null);k.tribe=p.tribe&&(g.intel>=.35)?p.tribe:0;k.herd=p.herd;k.age=rand(0,k.maxAge*.4);
+        S.creatures.push(k);
+      }
+      // los pueblos: conocimiento, eras y construcciones (un "socialTick" por cada 50 ciclos)
+      const sm=ticks>=50000?10:5;for(let k=0;k<chunk/(50*sm);k++)socialTick(sm);
+      // las catástrofes y los saltos espaciales se resuelven
+      S.fires=[];for(const f of S.floods)f.t=f.dur;if(S.floods.length)disasterTick(5);
+      S.swarms=[];S.shots=[];for(const sh of S.ships)sh.t=sh.dur;if(S.ships.length)shipTick();
+      for(const m of S.meteors)m.t=m.dur;if(S.meteors.length)meteorTick();
+      // la vegetación vuelve a crecer
+      for(let k=0;k<Math.min(chunk,400);k++){const x=rand(1,W-1),y=rand(1,H-1),i=tIdx(x,y);if(i>=0&&!wallT[i]&&S.plants.length<8000)S.plants.push({x,y,z:zone[i],dead:false});}
+      if(untilEra){const lv=Object.values(S.tribes).map(t=>t.lvl).reduce((a,b)=>Math.max(a,b),0);if(lv>lv0||Object.keys(S.tribes).length>tb0&&lv0===0)break;}
+    }
+    // unos pocos ciclos reales para que todo se recoloque
+    for(let k=0;k<30;k++)step();
+    return{done,log};
+  }finally{hooks.event=ev;}
+}
+
 /* ---- Era espacial: cohetes hacia otras tierras ---- */
 function launchShip(tb){
   const others=REGIONS.filter(r=>r!==regionOf(tb.hx,tb.hy));
@@ -771,7 +922,8 @@ function shipTick(){
   S.ships=S.ships.filter(s=>!s.done);
 }
 
-function socialTick(){
+/* mult > 1: el salto instantáneo agrupa varios turnos sociales en uno (más conocimiento y más obras) */
+function socialTick(mult=1){
   const TB=S.tribes;
   for(const id in TB){const tb=TB[id];tb.n=0;tb.e=0;tb.iq=0;tb.herd=0;tb.wn=0;tb.sickP={};}
   const cons=[];
@@ -804,12 +956,16 @@ function socialTick(){
       delete TB[id];continue;
     }
     tb.avg=tb.e/tb.n;
-    tb.know+=(tb.iq/tb.n)*Math.sqrt(tb.n)*2*(1+0.1*tb.lvl)*(tb.kind==='tec'?1.3:1);
+    tb.wet=nearWater(tb.hx,tb.hy,90);
+    // un pueblo que vive junto al agua puede volverse marinero
+    if(tb.wet&&tb.kind!=='mar'&&tb.kind!=='des'&&Math.random()<0.004)tb.kind='mar';
+    tb.know+=(tb.iq/tb.n)*Math.sqrt(tb.n)*2*(1+0.1*tb.lvl)*(tb.kind==='tec'?1.3:1)*mult;
     while(tb.lvl<MAX_LV&&tb.know>=LV[tb.lvl+1]){tb.lvl++;hooks.event('era',tb);}
   }
   for(const c of S.creatures){
     if(!c.tribe||c.zombie)continue;const tb=TB[c.tribe];if(!tb)continue;
     c.energy+=(tb.avg-c.energy)*0.15;
+    if(tb.kind==='mar'&&tb.wet)c.energy+=1.2*sz(c)**2;   // los marineros pescan en su lago
     if(tb.war&&!c.warrior&&!c.mig&&c.age>200&&tb.wn<tb.n*0.5&&Math.random()<0.2){c.warrior=true;tb.wn++;}
   }
   for(const id in TB){
@@ -830,7 +986,7 @@ function socialTick(){
       const a=rand(0,6.283),x=tb.hx+Math.cos(a)*tb.R*T*0.5,y=tb.hy+Math.sin(a)*tb.R*T*0.5;
       if(!blocked(x,y)&&zoneAt(x,y)===hz){tb.corral={x,y,r:12};break;}
     }
-    growTown(tb);
+    for(let g=0;g<Math.min(mult,3);g++)growTown(tb);
     // investigar la cura de la peste (desde el Reino; los tecnológicos, más rápido)
     if(tb.lvl>=6)for(const pid in tb.sickP){
       const id=+pid;if(tb.cures.includes(id))continue;
@@ -850,7 +1006,8 @@ function socialTick(){
         if((o.hx-tb.hx)**2+(o.hy-tb.hy)**2<230*230){tb.war=o.id;o.war=tb.id;tb.warSince=o.warSince=S.tick;hooks.event('war',tb,o);break;}
       }
     }
-    if(tb.lvl>=5&&tb.lvl<9&&tb.n>=18&&!tb.war&&S.tick-tb.lastCol>3000&&Object.keys(TB).length<16){
+    // desde la era de los Guerreros mandan colonos a explorar y poblar el tablero
+    if(tb.lvl>=4&&tb.lvl<9&&tb.n>=14&&!tb.war&&S.tick-tb.lastCol>2500&&Object.keys(TB).length<18){
       let tgt=null;
       const reg=regionOf(tb.hx,tb.hy);
       for(let k=0;k<25&&!tgt;k++){
@@ -886,7 +1043,8 @@ function addPlants(z,n){
 }
 function fresh(){
   S={tick:0,nextId:1,creatures:[],plants:[],tribes:{},tribeSeq:0,env:RECTS.map(()=>({...AMB})),food:1,mut:1,vis:1.6,cap:1500,breaks:0,births:0,nextImm:35,ships:[],ruins:[],
-    fires:[],floods:[],swarms:[],shots:[],plagueSeq:0,sickN:0,vStrain:1,evo:1};
+    fires:[],floods:[],swarms:[],shots:[],plagueSeq:0,sickN:0,vStrain:1,evo:1,lakes:[],wild:[],meteors:[],daynight:true};
+  waterT.fill(0);scorch.fill(0);
   buildRecipients();computeZones();
   for(let z=1;z<=6;z++)addPlants(z,90);
   // R5: presas solas, para que la vida tenga tiempo de evolucionar.
@@ -948,7 +1106,13 @@ hooks.event=(k,a,b)=>{
   if(k==='destroyed'){spawnDebris(a);return;}
   if(k==='fight'){if(fxB.booms.length<60){const q=P3(a.x,a.y);fxB.booms.push({x:q.x,y:q.y+.01,z:q.z,t:.3,spark:true});}return;}
   if(k==='impact'){const q=P3(a.x1,a.y1);fxB.booms.push({x:q.x,y:q.y+.01,z:q.z,t:0,big:a.lvl>=9});return;}
-  if(k==='fireout'){if(performance.now()-lastFireToast>9000){lastFireToast=performance.now();toast(`🚒 Los ${a.name} apagan un incendio.`);}return;}
+  if(k==='fireout'){
+    if(b&&fxB.booms.length<80){const q=P3(b.x,b.y);fxB.booms.push({x:q.x,y:q.y+.02,z:q.z,t:0,splash:true});}   // chorro de agua
+    if(performance.now()-lastFireToast>9000){lastFireToast=performance.now();toast(`🚒 Los ${a.name} están apagando el incendio.`);}return;}
+  if(k==='lake'){toast('💧 El agua de la lluvia se ha quedado estancada: ¡ha nacido un lago!');return;}
+  if(k==='pond'){toast(`💧 Los ${a.name} excavan un embalse junto a su pueblo.`);return;}
+  if(k==='meteor'){const q=P3(a.x,a.y);fxB.booms.push({x:q.x,y:q.y+.02,z:q.z,t:0,big:true});spawnDebris({x:a.x,y:a.y,k:'cohete'});spawnDebris({x:a.x+8,y:a.y-6,k:'bunker'});
+    toast('☄️ ¡Impacto de meteorito! Cráter, incendios… y el polvo cósmico provoca mutaciones.');return;}
   if(k==='cureFound')toast(`💊 Los ${a.name} descubren la cura de la peste nº ${b.id}.`);
   if(k==='swarmdead')toast('🦗 El enjambre de langostas ha sido eliminado.');
   if(k==='launch')toast(`🚀 Los ${a.name} lanzan un cohete hacia: ${b.name}.`);
@@ -1056,7 +1220,7 @@ controls.maxPolarAngle=Math.PI*0.49;
 controls.screenSpacePanning=false;
 controls.touches={ONE:THREE.TOUCH.PAN,TWO:THREE.TOUCH.DOLLY_ROTATE};
 function updateOrbitButtons(){
-  const tapTool=!['grab','wall','rect','erase','smash'].includes(mode);
+  const tapTool=!['grab','wall','rect','erase','smash','trees'].includes(mode);
   controls.mouseButtons={LEFT:tapTool?THREE.MOUSE.PAN:-1,MIDDLE:THREE.MOUSE.PAN,RIGHT:THREE.MOUSE.ROTATE};
 }
 updateOrbitButtons();
@@ -1072,8 +1236,16 @@ const scaleRGB=(c,k)=>{_c3[0]=c[0]*k;_c3[1]=c[1]*k;_c3[2]=c[2]*k;return _c3;};
 const lerpRGB=(a,b,f)=>{_c3[0]=a[0]+(b[0]-a[0])*f;_c3[1]=a[1]+(b[1]-a[1])*f;_c3[2]=a[2]+(b[2]-a[2])*f;return _c3;};
 const flat=(color,extra={})=>new THREE.MeshStandardMaterial({color,flatShading:true,roughness:.85,...extra});
 
-scene.add(new THREE.HemisphereLight('#f2f6ff','#4b545c',2.2));
+const hemi=new THREE.HemisphereLight('#f2f6ff','#4b545c',2.2);scene.add(hemi);
 const sun=new THREE.DirectionalLight('#ffffff',1.6);sun.position.set(3,6,2);scene.add(sun);
+/* 🌗 Día y noche: un día dura 2.400 ciclos; de noche las ventanas y los fuegos brillan */
+const BG_DAY=new THREE.Color('#1b2329'),BG_NIGHT=new THREE.Color('#06080c'),_bgc=new THREE.Color();
+function dayAmount(){if(!S.daynight)return 1;const f=(S.tick%2400)/2400;return clamp(.5+.62*Math.cos(f*Math.PI*2),0,1);}
+function updateDayNight(){
+  const d=dayAmount();
+  hemi.intensity=.35+1.85*d;sun.intensity=.15+1.45*d;
+  scene.background=_bgc.copy(BG_NIGHT).lerp(BG_DAY,d);
+}
 
 // --- La sala (en coordenadas del mundo: el suelo está en y = -TABLE_Y) ---
 const ROOM_W=16,ROOM_D=14,ROOM_H=4.2,FY=-TABLE_Y,RZ0=0;
@@ -1150,6 +1322,13 @@ function drawBG(){
       }
     }
   }
+  // lagos: orilla de arena y agua (primero todas las orillas, luego todo el agua, para que se fundan)
+  for(const l of S.lakes){const g=regionOf(l.x,l.y).g;g.fillStyle='#b7a77a';g.beginPath();g.arc(l.x,l.y,l.r+3.5,0,6.283);g.fill();}
+  for(const l of S.lakes){const g=regionOf(l.x,l.y).g;g.fillStyle='#2a6f9a';g.beginPath();g.arc(l.x,l.y,l.r,0,6.283);g.fill();}
+  for(const l of S.lakes){const g=regionOf(l.x,l.y).g;g.fillStyle='#1d5578';g.beginPath();g.arc(l.x,l.y,l.r*.55,0,6.283);g.fill();}
+  // cráteres de meteorito
+  for(const m of S.ruinsCraters||[]){const g=regionOf(m.x,m.y).g;g.fillStyle='rgba(30,22,16,.75)';g.beginPath();g.arc(m.x,m.y,22,0,6.283);g.fill();
+    g.strokeStyle='rgba(90,70,50,.9)';g.lineWidth=3;g.stroke();}
   for(const id in S.tribes){
     const tb=S.tribes[id];if(!tb.farms.length)continue;
     const g=regionOf(tb.hx,tb.hy).g;
@@ -1250,7 +1429,8 @@ const B={
   smoke:makePool(new THREE.SphereGeometry(1,8,6),std({transparent:true,opacity:.35,depthWrite:false,roughness:1}),900,dynPools,2),
   win:  makePool(new THREE.BoxGeometry(1,1,1),basic(),9000),
   flame:makePool(base0(new THREE.ConeGeometry(1,1,6)),basic({transparent:true,opacity:.9}),1600,dynPools,3),
-  water:makePool(base0(new THREE.CylinderGeometry(1,1,1,32)),std({transparent:true,opacity:.5,depthWrite:false,roughness:.1,metalness:.2}),40,dynPools,2),
+  water:makePool(base0(new THREE.CylinderGeometry(1,1,1,32)),std({transparent:true,opacity:.5,depthWrite:false,roughness:.1,metalness:.2}),260,dynPools,2),
+  sail: makePool(base0(new THREE.ConeGeometry(1,1,3)),std({side:THREE.DoubleSide,roughness:.8}),300),
 };
 const WP={
   glass:makePool(base0(new THREE.BoxGeometry(1,1,1)),std({transparent:true,opacity:.42,depthWrite:false,roughness:.1,metalness:.1}),4000,wallPools,2),
@@ -1274,6 +1454,10 @@ const C={
   tent:rgb('#4a2a2a'),thatch:rgb('#c2a35a'),moss:rgb('#5f8a3a'),modern:rgb('#eef0f2'),concrete:rgb('#7a7c80'),roofDark:rgb('#2a2a2e'),
   blockC:[rgb('#c9b8a4'),rgb('#b98a6a'),rgb('#d8d2c4')],glassT:[rgb('#5d84ad'),rgb('#7a98b8'),rgb('#4c6e8c')],smog:rgb('#6b6858'),
   tank:rgb('#5a6040'),tread:rgb('#2a2a24'),plane:rgb('#c8ccd2'),spark:rgb('#ff4a2a'),
+  pine:rgb('#24573a'),fir:rgb('#1f4a36'),oak:rgb('#3f7a34'),oak2:rgb('#4e8a3c'),birch:rgb('#e8e4dc'),birchLeaf:rgb('#9fcb5a'),
+  palmTrunk:rgb('#8a6a44'),palm:rgb('#4f9a3a'),willow:rgb('#6f9a4a'),trunk2:rgb('#5a3a30'),cherry:rgb('#f2a6c4'),cherry2:rgb('#f7c4d8'),
+  maple:rgb('#d2581e'),maple2:rgb('#e8a02a'),cypress:rgb('#2a4a2e'),baobab:rgb('#9a8064'),lake:rgb('#3a8fc8'),
+  pier:rgb('#8a6a48'),hull:rgb('#7a4a2a'),hull2:rgb('#2a3a5a'),sailW:rgb('#f2efe4'),light:rgb('#fff2a0'),splash:rgb('#7ac8ff'),
 };
 
 let lastWalls=-99;
@@ -1450,6 +1634,36 @@ function drawPlants(){
 }
 
 /* ---------- Edificios ---------- */
+/* Las 10 especies de árbol, en piezas sencillas (s = tamaño, k = 1 normal / 0.25 resaltado de linaje apagado) */
+function treeSp(x,y,z,s,sp,seed=0){
+  const u=K*s,sw=Math.sin(frameN*.02+seed)*.04;
+  switch(sp){
+    case 'pino':   inst(B.cyl,x,y,z,0,.7*u,5*u,.7*u,C.trunk);inst(B.cone,x,y+3*u,z,0,3.4*u,12*u,3.4*u,C.pine);break;
+    case 'abeto':  inst(B.cyl,x,y,z,0,.7*u,3*u,.7*u,C.trunk);
+      for(let k=0;k<3;k++)inst(B.cone,x,y+(2+k*3.4)*u,z,k,(4.4-k*1.2)*u,(5.2-k*.8)*u,(4.4-k*1.2)*u,C.fir);break;
+    case 'roble':  inst(B.cyl,x,y,z,0,1.1*u,5*u,1.1*u,C.trunk);
+      inst(P.head,x,y+8*u,z,0,5*u,4*u,5*u,C.oak);inst(P.head,x+2.6*u,y+7*u,z+1*u,0,3*u,2.6*u,3*u,C.oak2);inst(P.head,x-2.4*u,y+7.4*u,z-1.4*u,0,3*u,2.6*u,3*u,C.oak2);break;
+    case 'abedul': inst(B.cyl,x,y,z,0,.55*u,9*u,.55*u,C.birch);
+      for(let k=0;k<3;k++)inst(B.box,x,y+(2+k*2.2)*u,z,k,.62*u,.25*u,.62*u,C.shell);
+      inst(P.head,x,y+10*u,z,0,2.4*u,3.4*u,2.4*u,C.birchLeaf);break;
+    case 'palmera':{
+      const h=11*u;inst(B.cyl,x+sw*u*8,y,z,0,.6*u,h,.6*u,C.palmTrunk);
+      _Q2.setFromAxisAngle(_UP,0);
+      for(let k=0;k<6;k++){_Q.setFromAxisAngle(new THREE.Vector3(Math.cos(k*1.047),0,Math.sin(k*1.047)),1.9);instQ(B.blade,x+sw*u*8,y+h,z,_Q,.5*u,5.5*u,1.6*u,C.palm);}
+      break;}
+    case 'sauce':  inst(B.cyl,x,y,z,0,.9*u,5*u,.9*u,C.trunk);
+      inst(B.dome,x,y+4.5*u,z,0,5.2*u,4.6*u,5.2*u,C.willow);inst(B.cyl,x,y+1.6*u,z,0,4.8*u,3.2*u,4.8*u,scaleRGB(C.willow,.85));break;
+    case 'cerezo': inst(B.cyl,x,y,z,0,.7*u,4.5*u,.7*u,C.trunk2);
+      inst(P.head,x,y+6.5*u,z,0,3.6*u,2.8*u,3.6*u,C.cherry);inst(P.head,x+1.8*u,y+6*u,z+.6*u,0,2.2*u,1.8*u,2.2*u,C.cherry2);break;
+    case 'arce':   inst(B.cyl,x,y,z,0,.8*u,5*u,.8*u,C.trunk);
+      inst(P.head,x,y+7.5*u,z,0,4*u,3.6*u,4*u,C.maple);inst(P.head,x-1.6*u,y+6.6*u,z+1.4*u,0,2.4*u,2*u,2.4*u,C.maple2);break;
+    case 'cipres': inst(B.cyl,x,y,z,0,.5*u,2*u,.5*u,C.trunk);inst(B.cone,x,y+1.5*u,z,0,1.6*u,13*u,1.6*u,C.cypress);break;
+    case 'baobab': inst(B.cyl,x,y,z,0,2.4*u,7*u,2.4*u,C.baobab);
+      for(let k=0;k<4;k++){const a=k*1.571+.4;inst(B.cyl,x+Math.cos(a)*1.8*u,y+7*u,z+Math.sin(a)*1.8*u,0,.5*u,2*u,.5*u,C.baobab);}
+      inst(P.head,x,y+9.6*u,z,0,5*u,1.6*u,5*u,C.oak);break;
+    default: tree(x,y,z,s);
+  }
+}
 function tree(x,y,z,s,col){
   inst(B.cyl,x,y,z,0,.7*K*s,4*K*s,.7*K*s,C.trunk);
   inst(B.cone,x,y+3*K*s,z,0,3.6*K*s,9*K*s,3.6*K*s,col||C.leaf);
@@ -1641,6 +1855,29 @@ function drawBuilding(b,tc,kind,ruin){
     case 'bunker':
       inst(B.box,X,Y,Z,rot,10*u,3.4*u,10*u,C.bunker);inst(B.dome,X,Y+3.4*u,Z,0,4*u,3*u,4*u,scaleRGB(C.bunker,.8));
       inst(B.box,ox(4,0),Y+5*u,oz(4,0),rot,7*u,.8*u,.8*u,C.chimney);break;
+    case 'muelle':                              // pasarela de madera que entra en el agua
+      for(let k=0;k<6;k++)box(B.box,1+k*2,0,.3,1.9,.3,3,C.pier);
+      for(let k=0;k<4;k++)for(const sd of [-1.4,1.4])box(B.box,2+k*3.2,sd,-.6,.3,1.2,.3,C.trunk);
+      inst(B.cyl,ox(12,1.2),Y,oz(12,1.2),0,.35*u,1.6*u,.35*u,C.trunk);
+      break;
+    case 'palafito':                            // casa sobre pilotes junto al agua
+      for(const f of [-2.6,2.6])for(const sd of [-2.2,2.2])box(B.box,f,sd,0,.4,2.4,.4,C.trunk);
+      box(B.box,0,0,2.4,7,.4,6,C.pier);box(B.box,0,0,2.8,6,4.4,5,C.wallEco);box(B.roof,0,0,7.2,5,3.4,5,C.thatch,.785);
+      box(B.box,3.02,0,2.8,.2,2.6,1.4,C.door);win(0,2.55,4.8,1.4,1.2,.15);
+      box(B.box,4.4,0,1.4,2.6,.2,1.4,C.pier);   // escalerilla
+      break;
+    case 'faro':
+      inst(B.cyl,X,Y,Z,0,2.6*u,2*u,2.6*u,C.stone);
+      for(let k=0;k<5;k++)inst(B.cyl,X,Y+(2+k*3.6)*u,Z,0,(2.1-k*.12)*u,3.6*u,(2.1-k*.12)*u,k%2?C.redCross:C.white);
+      inst(B.cyl,X,Y+20*u,Z,0,1.5*u,2.2*u,1.5*u,C.glass);inst(B.cone,X,Y+22.2*u,Z,0,1.8*u,2.4*u,1.8*u,C.redCross);
+      {const a2=frameN*.03,lx=X+Math.cos(a2)*3*u,lz=Z+Math.sin(a2)*3*u;
+       inst(P.glow,X,Y+21*u,Z,0,1*u,1*u,1*u,C.light);inst(P.halo,lx,Y+21*u,lz,0,3*u,1.6*u,3*u,scaleRGB(C.light,(1.2-dayAmount())*.8));}
+      break;
+    case 'astillero':                           // grada con un barco a medio construir
+      box(B.box,0,0,0,12,.6,7,C.pier);
+      box(B.box,1,0,.6,8,2.4,3.6,C.hull);box(B.box,1,0,3,.4,6,.4,C.trunk);
+      for(let k=0;k<4;k++)box(B.box,-3+k*2.6,-3.4,0,.3,5,.3,C.trunk);box(B.box,0,-3.4,5,11,.3,.3,C.trunk);
+      break;
     case 'cohete':{
       inst(B.box,X,Y,Z,rot,12*u,1*u,12*u,C.pad);
       inst(B.box,ox(-5,-5),Y,oz(-5,-5),rot,1*u,22*u,1*u,C.chrome2);
@@ -1656,10 +1893,13 @@ function drawBuilding(b,tc,kind,ruin){
 }
 function drawCivs(){
   for(const r of S.ruins)drawBuilding(r,null,null,true);
+  for(const tr of S.wild){const q=P3(tr.x,tr.y);treeSp(q.x,q.y,q.z,tr.s,tr.sp,tr.x);}
+  for(const l of S.lakes){const q=P3(l.x,l.y);inst(B.water,q.x,q.y,q.z,0,l.r*K,.003+Math.sin(frameN*.03+l.x)*.0008,l.r*K,C.lake);}
   for(const id in S.tribes){
     const tb=S.tribes[id],p=P3(tb.hx,tb.hy),X=p.x,Y=p.y,Z=p.z,tc=rgb(tb.col);
     if(tb.corral){const q=P3(tb.corral.x,tb.corral.y);inst(P.ring,q.x,q.y+.002,q.z,0,tb.corral.r*K,.06,tb.corral.r*K,C.herd);}
-    for(const tr of tb.trees){const q=P3(tr.x,tr.y);tree(q.x,q.y,q.z,tr.s,tb.kind==='eco'?C.leaf:C.leaf2);}
+    for(const tr of tb.trees){const q=P3(tr.x,tr.y);if(tr.sp)treeSp(q.x,q.y,q.z,tr.s,tr.sp,tr.x);else tree(q.x,q.y,q.z,tr.s,tb.kind==='eco'?C.leaf:C.leaf2);}
+    if(tb.kind==='mar'&&tb.wet)drawBoats(tb);
     for(const b of tb.buildings)drawBuilding(b,tc,tb.kind,false);
     if(tb.lvl<3){
       const f=.9+.3*Math.sin(frameN*.3+tb.id);
@@ -1676,6 +1916,22 @@ function drawCivs(){
     if(tb.war)drawArmy(tb,X,Y,Z);
     const lh=tb.kind==='tec'&&tb.lvl>=7?.62:hgt;
     label(`${tb.war?'⚔ ':''}${KINDS[tb.kind].icon} ${tb.name} · ${eraName(tb)}`,tb.war?'#ffb3a8':'#ffffff',X,Y+lh,Z,.034,tb.war?'rgba(150,25,15,.85)':null);
+  }
+}
+/* ⛵ Barcos de los pueblos marineros navegando por su lago: barcas, veleros y, al final, barcos de vapor */
+function drawBoats(tb){
+  let lake=null,bd=Infinity;for(const l of S.lakes){const d=(l.x-tb.hx)**2+(l.y-tb.hy)**2;if(d<bd){bd=d;lake=l;}}
+  if(!lake||bd>(lake.r+90)**2)return;
+  const n=Math.min(8,Math.max(1,tb.lvl-2),Math.max(1,Math.floor(lake.r/(tb.lvl>=8?14:9)))),q=P3(lake.x,lake.y),u=K*BSCALE,tc=rgb(tb.col);
+  for(let k=0;k<n;k++){
+    const dirS=k%2?1:-1,a=frameN*.0025*dirS*(1+k*.1)+k*2.1+tb.id,R=lake.r*K*(.35+.4*((k*37)%10)/10);
+    const x=q.x+Math.cos(a)*R,z=q.z+Math.sin(a)*R,y=q.y+.003+Math.sin(frameN*.05+k)*.0008,hd=-(a+dirS*Math.PI/2);
+    if(tb.lvl<6){inst(B.box,x,y,z,hd,4*u,.8*u,1.6*u,C.hull);inst(P.head,x,y+1.2*u,z,hd,.5*u,.6*u,.5*u,rgb(tb.look?tb.look.skin:'#e0b080'));}
+    else if(tb.lvl<8){inst(B.box,x,y,z,hd,6*u,1.2*u,2.2*u,C.hull);inst(B.box,x,y+1.2*u,z,hd,.25*u,7*u,.25*u,C.trunk);
+      inst(B.sail,x,y+1.6*u,z,hd+1.571,2.8*u,5*u,.3*u,k%2?C.sailW:tc);}
+    else{inst(B.box,x,y,z,hd,9*u,1.6*u,3*u,C.hull2);inst(B.box,x,y+1.6*u,z,hd,4*u,2*u,2.4*u,C.white);
+      inst(B.cyl,x,y+3.6*u,z,0,.6*u,2.4*u,.6*u,tc);
+      const f=(frameN*.01+k*.3)%1;inst(B.smoke,x,y+(6+f*6)*u,z,0,(1+f*2)*u,(1+f*1.4)*u,(1+f*2)*u,C.smoke);}
   }
 }
 /* Ejército visible en guerra: tanques desde la era industrial y aviones desde la espacial */
@@ -1746,11 +2002,22 @@ function drawDisasters(dt){
     inst(P.glow,x,y,z,0,r,r,r,sh.lvl>=9?C.missile:sh.lvl>=7?C.shell:C.ruin);
     if(sh.lvl>=7)inst(P.halo,x,y,z,0,r*2.4,r*2.4,r*2.4,sh.lvl>=9?C.flame:scaleRGB(C.boom,.5));
   }
-  for(const b of fxB.booms){
-    b.t+=dt;const f=b.t/(b.dust?.9:.6),s=(b.big?.12:b.dust?.07:.06)*Math.min(1,f*1.6);
-    inst(P.halo,b.x,b.y,b.z,0,s,s*.7,s,b.dust?scaleRGB(C.debris,(1-f)*.8):scaleRGB(b.spark?C.spark:C.boom,(1-f)));
+  // ☄️ meteoritos cayendo
+  for(const m of S.meteors){
+    const f=m.t/m.dur,q=P3(m.x,m.y),h=(1-f)*2.6,off=(1-f)*1.2;
+    const x=q.x+off,y=q.y+h,z=q.z-off*.5,r=.03+.01*Math.sin(frameN*.6);
+    inst(P.head,x,y,z,frameN*.1,r,r,r,C.ruin);
+    inst(P.halo,x,y,z,0,r*3,r*3,r*3,C.flame);
+    for(let k=1;k<6;k++)inst(P.halo,x+k*.06,y+k*.12,z-k*.03,0,r*(2.6-k*.35),r*(2.6-k*.35),r*(2.6-k*.35),scaleRGB(C.boom,1-k*.16));
+    const ring=P3(m.x,m.y);inst(P.ring,ring.x,ring.y+.003,ring.z,0,30*K*(.5+f*.5),.01,30*K*(.5+f*.5),scaleRGB(C.spark,f));
   }
-  fxB.booms=fxB.booms.filter(b=>b.t<(b.dust?.9:.6));
+  for(const b of fxB.booms){
+    const life=b.big?1.4:b.dust?.9:.6;
+    b.t+=dt;const f=b.t/life,s=(b.big?.32:b.dust?.07:b.splash?.05:.06)*Math.min(1,f*1.6);
+    const col=b.dust?scaleRGB(C.debris,(1-f)*.8):b.splash?scaleRGB(C.splash,(1-f)):scaleRGB(b.spark?C.spark:C.boom,(1-f));
+    inst(P.halo,b.x,b.y+(b.splash?f*.04:0),b.z,0,s,s*(b.splash?1.4:.7),s,col);
+  }
+  fxB.booms=fxB.booms.filter(b=>b.t<(b.big?1.4:b.dust?.9:.6));
   for(const d of fxB.debris){
     d.life-=dt;d.vy-=2.2*dt;d.x+=d.vx*dt*.25;d.y=Math.max(d.y+d.vy*dt*.25,d.fy+.001);d.z+=d.vz*dt*.25;d.rx+=dt*6;
     inst(P.box,d.x,d.y,d.z,d.rx,d.r,d.r*.7,d.r,d.c);
@@ -1787,6 +2054,7 @@ function render3D(dt){
   drawCivs();
   drawShips();
   drawDisasters(dt);
+  updateDayNight();
 
   RECTS.forEach((R,i)=>{
     const E=S.env[i],p=P3((R.x+R.w/2)*T,R.y*T);
@@ -1822,8 +2090,8 @@ function render3D(dt){
   if(toolRing.visible){
     const q=P3(hp.hit.sim.x,hp.hit.sim.y);
     toolRing.position.set(q.x,q.y+.003,q.z);
-    const RR={wall:brush.size===2?6:3,erase:brush.size===2?6:3,rain:75,plague:34,fire:10,locust:14,smash:SMASH_R};
-    const RC={virus:'#B5F03C',vax:'#FFD34D',erase:'#e0603f',rain:'#5ab0f0',plague:'#c8b840',fire:'#ff6a1a',locust:'#8a8a3a',smash:'#ff9a6a'};
+    const RR={wall:brush.size===2?6:3,erase:brush.size===2?6:3,rain:75,plague:34,fire:10,locust:14,smash:SMASH_R,lake:26,trees:22,meteor:30};
+    const RC={virus:'#B5F03C',vax:'#FFD34D',erase:'#e0603f',rain:'#5ab0f0',plague:'#c8b840',fire:'#ff6a1a',locust:'#8a8a3a',smash:'#ff9a6a',lake:'#3a9ae0',trees:'#5fc86a',meteor:'#c87aff'};
     toolRing.scale.setScalar((RR[mode]||10)*K);
     toolRing.material.color.set(RC[mode]||'#ffffff');
   }
@@ -1858,11 +2126,15 @@ const panel=new THREE.Mesh(new THREE.PlaneGeometry(.62,.62*PANEL_H/PANEL_W),new 
 panel.renderOrder=20;panel.visible=false;rig.add(panel);
 
 const FONT='system-ui,-apple-system,"Segoe UI",Roboto,sans-serif';
-const TABS=[['herr','🧰 Útiles'],['recip','🧪 Recipiente'],['civ','🏛️ Pueblos'],['datos','📊 Datos'],['lab','⚙️ Ajustes']];
+const TABS=[['herr','🧰 Útiles'],['viaje','🧭 Viajar'],['recip','🧪 Recipiente'],['civ','🏛️ Pueblos'],['datos','📊 Datos'],['lab','⚙️ Ajustes']];
 const TOOLS=[['look','👁️ Observar'],['grab','🤏 Pinzas'],['add','➕ Añadir'],['smash','🔨 Demoler'],
+  ['lake','💧 Lago'],['trees','🌳 Bosque'],['rain','🌧️ Lluvia'],['fire','🔥 Fuego'],
   ['vax','💉 Vacuna'],['virus','🦠 Virus V'],['plague','☣️ Peste'],['locust','🦗 Langostas'],
-  ['rain','🌧️ Lluvia'],['fire','🔥 Fuego'],['wall','🧱 Pared'],['rect','⬜ Recinto'],['erase','💥 Romper muros']];
+  ['meteor','☄️ Meteorito'],['wall','🧱 Pared'],['rect','⬜ Recinto'],['erase','💥 Romper muros']];
 const TOOL_HELP={
+  lake:'Pulsa para crear un lago. Pulsa otra vez al lado y se suma superficie: así haces lagos de la forma que quieras. En el agua solo nadan las células, los peces y los pueblos marineros ⚓, que construyen muelles, palafitos, faros y barcos.',
+  trees:'Mantén pulsado y arrastra para plantar un bosque. Hay 10 especies (pino, abeto, roble, abedul, palmera, sauce, cerezo, arce, ciprés y baobab) y cada sitio elige las que le van: palmeras con calor, pinos con frío, sauces junto al agua. Los bosques dan comida… y arden.',
+  meteor:'Pulsa para que caiga un meteorito: abre un cráter, arrasa lo que hay, provoca incendios y su polvo cósmico hace mutar a los seres cercanos. A veces el cráter se llena de agua.',
   smash:'Mantén pulsado y arrastra: arrasas edificios, árboles y muros (también el cristal de los recipientes) por donde pasas. En VR también puedes golpearlos con el mando (un golpe rápido) sin elegir ninguna herramienta.',
   rain:'Pulsa para que llueva ahí: el agua sube e inunda la zona. Ahoga a los que no nadan (las células y los peces sí), estropea casas bajas y cultivos, y apaga incendios. Desde la Era industrial los pueblos levantan diques.',
   fire:'Pulsa para prender fuego. Se propaga por las algas, los árboles y los edificios. Desde la Ciudad-estado los pueblos apagan fuegos cerca de casa, y con un parque de bomberos mucho mejor.',
@@ -1937,12 +2209,13 @@ function drawPanel(){
     tx(jump.untilEra?`⏭ Buscando la próxima era… ${fmt(jump.done)} ciclos`:`⏩ ${fmt(jump.done)} de ${fmt(jump.n)} ciclos`,32+bw/2,243,25,UI.ink,true,'center');
     button(PANEL_W-32-240,204,240,58,'⏹ Parar aquí',stopJump,{id:'stopj',fill:'#a8261a',color:'#C8301C',textColor:'#ffffff'});
   }else{
-    [[1000,'⏩ 1.000'],[10000,'⏩ 10.000'],[100000,'⏩ 100.000'],['era','⏭ Próxima era']].forEach(([n,l],i)=>button(32+i*242,204,232,58,l,()=>startJump(n),{id:'j'+n,
-      fill:n==='era'?'#3a3010':undefined,color:n==='era'?'#8a6d10':undefined}));
+    [[1000,'⚡ +1.000'],[10000,'⚡ +10.000'],[100000,'⚡ +100.000'],['era','⏭ Próxima era']].forEach(([n,l],i)=>button(32+i*242,204,232,58,l,()=>doInstantJump(n),{id:'j'+n,
+      fill:n==='era'?'#3a3010':'#10283a',color:n==='era'?'#8a6d10':'#2a6a9a'}));
   }
-  TABS.forEach(([k,l],i)=>button(32+i*194,280,184,60,l,()=>{vr.tab=k;},{on:vr.tab===k,id:'tab'+k,size:23}));
+  TABS.forEach(([k,l],i)=>button(32+i*162,280,154,60,l,()=>{vr.tab=k;},{on:vr.tab===k,id:'tab'+k,size:20}));
   const y0=364;
   if(vr.tab==='herr')tabHerr(y0);
+  else if(vr.tab==='viaje')tabViaje(y0);
   else if(vr.tab==='recip')tabRecip(y0);
   else if(vr.tab==='civ')tabCiv(y0);
   else if(vr.tab==='datos')tabDatos(y0);
@@ -1950,7 +2223,7 @@ function drawPanel(){
   panelTex.needsUpdate=true;
 }
 function tabHerr(y){
-  const TC={virus:'#5D7F12',vax:'#a8861a',plague:'#7d7420',locust:'#5a5a2a',fire:'#b8401a',rain:'#2a6aa8',smash:'#8a4a2a'};
+  const TC={virus:'#5D7F12',vax:'#a8861a',plague:'#7d7420',locust:'#5a5a2a',fire:'#b8401a',rain:'#2a6aa8',smash:'#8a4a2a',lake:'#1d6aa0',trees:'#2f7d3f',meteor:'#7a3a8a'};
   TOOLS.forEach(([m,l],i)=>button(32+(i%4)*242,y+Math.floor(i/4)*72,232,62,l,()=>setMode(m),{on:mode===m,id:'t'+m,size:24,
     onColor:TC[m]||UI.ink,onText:TC[m]?'#ffffff':UI.bg}));
   y+=Math.ceil(TOOLS.length/4)*72+14;
@@ -1974,6 +2247,23 @@ function tabHerr(y){
   y+=30;sec('Leyenda',y);y+=8;
   wrap('Azul: presa · Rojo: depredador · Verde: zombi · Violeta: inmune · Mostaza: enfermo de peste · Anillo dorado: mutante · rojo: guerrero · marrón: ganado · de color: miembro de un pueblo · Franja oscura: macho · Rombos verdes: algas',
        32,y,PANEL_W-64,22,UI.muted,29,4);
+}
+function tabViaje(y){
+  y+=14;sec('Ir encima de los recipientes',y);y+=12;
+  button(32,y,PANEL_W-64,70,'🛸 Encima de los 6 recipientes',()=>goAbove(-1),{id:'goAll',fill:'#10283a',color:'#2a6a9a',size:28});y+=82;
+  RECTS.forEach((_,i)=>button(32+i*162,y,152,58,'⬇ R'+(i+1),()=>goAbove(i),{id:'goR'+i}));y+=86;
+  sec('Otras zonas',y);y+=12;
+  [['floor','🌍 Suelo'],['left','⬅ Encimera izq.'],['right','➡ Encimera dcha.'],['home','🚪 Inicio']].forEach(([k,l],i)=>
+    button(32+i*242,y,232,58,l,()=>k==='home'?(renderer.xr.isPresenting?homeVR():resetDeskView()):goRegion(k),{id:'goZ'+k,size:23}));
+  y+=86;
+  sec('Movimiento',y);y+=12;
+  const w=(PANEL_W-74)/2;
+  button(32,y,w,62,vr.fly?'✈️ Modo vuelo: SÍ':'✈️ Modo vuelo: no',()=>{vr.fly=!vr.fly;toast(vr.fly?'✈️ Modo vuelo: mira hacia donde quieras ir (también arriba o abajo) y empuja el stick izquierdo.':'🚶 Modo a pie.');},{id:'fly',on:!!vr.fly,onColor:UI.focus});
+  button(42+w,y,w,62,'📍 Traer el panel aquí',()=>{placePanel();vr.placed=true;},{id:'bring'});
+  y+=76;
+  stepper(y,'Tu altura',`${rig.position.y>=0?'+':''}${Math.round(rig.position.y*100)} cm`,()=>changeHeight(-.25),()=>changeHeight(.25));y+=80;
+  wrap('Con el modo vuelo activado, el stick izquierdo te lleva hacia donde miras: mira al techo para subir, al suelo para bajar o al panel para acercarte. Sin modo vuelo caminas por el suelo. Con el stick derecho giras (← →) o te teletransportas con el arco (↑).',
+       32,y,PANEL_W-64,22,UI.muted,29,5);
 }
 function tabRecip(y){
   RECTS.forEach((_,i)=>button(32+i*162,y,152,58,'R'+(i+1),()=>selectR(i),{on:selR===i,id:'r'+i}));
@@ -2026,7 +2316,7 @@ function tabCiv(y){
   y+=62;
   sec('Las eras',y);
   y+=4;
-  wrap('Tribu → Agricultura o Ganadería → Aldea → Guerreros → Ciudad-estado → Reino → Industrial → Moderna → Espacial → Sintética. 🔬 Avanzan rápido · 🌳 Plantan bosques y no atacan · 💣 Guerras, talas y contaminación. Desde el Reino, los pueblos en guerra disparan catapultas, obuses y misiles.',
+  wrap('Tribu → Agricultura o Ganadería → Aldea → Guerreros → Ciudad-estado → Reino → Industrial → Moderna → Espacial → Sintética. 🔬 Avanzan rápido · 🌳 Plantan bosques y no atacan · 💣 Guerras, talas y contaminación · ⚓ Viven del agua: pescan, nadan, barcos y palafitos. Desde el Reino, los pueblos en guerra disparan catapultas, obuses y misiles.',
        32,y+6,PANEL_W-64,21,UI.muted,28,4);
 }
 function tabDatos(y){
@@ -2063,7 +2353,8 @@ function tabLab(y){
   stepper(y,'Velocidad de evolución',`×${S.evo}`,adj('evo',-.5,1,4),adj('evo',.5,1,4));y+=66;
   const capAdj=d=>()=>{S.cap=clamp(S.cap+d,500,CAP);vr.dirty=true;};
   stepper(y,'Población máxima',fmt(S.cap),capAdj(-100),capAdj(100));y+=66;
-  stepper(y,'Tu altura en VR',`${rig.position.y>=0?'+':''}${Math.round(rig.position.y*100)} cm`,()=>changeHeight(-.2),()=>changeHeight(.2));y+=72;
+  tx('🌗 Día y noche',32,y+40,27,UI.ink,true);
+  button(560,y,432,58,S.daynight?'Activado (de noche se iluminan)':'Desactivado (siempre de día)',()=>{S.daynight=!S.daynight;},{id:'dn',on:S.daynight,onColor:UI.focus,size:22});y+=72;
   sec('Música ambiental',y);y+=16;
   button(32,y,300,58,music.on?'🎵 Música: sí':'🔇 Música: no',()=>{music.on=!music.on;music.apply();},{id:'mus',on:music.on,onColor:UI.focus});
   button(560,y,96,58,'−',()=>{music.vol=clamp(Math.round((music.vol-.1)*10)/10,0,1);},{id:'mv-',size:34});
@@ -2156,6 +2447,7 @@ function smashAt(p){
   let n=0,hit;
   while((hit=findBuildingAt(p.x,p.y,SMASH_R))){destroyBuilding(hit.tb,hit.i,'demolición');n++;}
   for(const id in S.tribes){const tr=S.tribes[id].trees;for(let i=tr.length-1;i>=0;i--)if((tr[i].x-p.x)**2+(tr[i].y-p.y)**2<SMASH_R*SMASH_R){tr.splice(i,1);n++;}}
+  const w0=S.wild.length;S.wild=S.wild.filter(tr=>(tr.x-p.x)**2+(tr.y-p.y)**2>=SMASH_R*SMASH_R);n+=w0-S.wild.length;
   return n+smashWalls(p,8);
 }
 /* Rompe los muros (cristal de los recipientes, piedra y madera de los pueblos) en un radio */
@@ -2197,6 +2489,9 @@ function pointerDown(ptr){
   if(mode==='look'){zoneTapped(p);sel=nearest(p,tapR(ptr));vr.dirty=true;if(sel)buzz(ptr,.3,30);return;}
   if(mode==='grab'){grabCreature(ptr,p);return;}
   if(mode==='smash'){ptr.drag={smash:true,last:p};if(smashAt(p))buzz(ptr,.9,90);return;}
+  if(mode==='lake'){if(addLake(p.x,p.y,26)){buzz(ptr,.4,60);if(S.lakes.length===1)toast('💧 Lago creado. Pulsa al lado para hacerlo más grande.');}else toast('Ahí no se puede poner agua.');return;}
+  if(mode==='trees'){ptr.drag={trees:true,last:p};plantForest(p.x,p.y,8,22);buzz(ptr,.25,30);return;}
+  if(mode==='meteor'){startMeteor(p.x,p.y);buzz(ptr,.6,80);return;}
   if(mode==='fire'){startFire(p.x,p.y);buzz(ptr,.5,60);return;}
   if(mode==='rain'){const n=startRain(p.x,p.y);buzz(ptr,.3,60);toast(n?`🌧️ La lluvia apaga ${n} focos de fuego.`:'🌧️ Empieza a llover con fuerza…');return;}
   if(mode==='plague'){const r=startPlague(p.x,p.y);buzz(ptr,.4,60);toast(r.n?`☣️ Peste nº ${r.id}: ${r.n} organismos enfermos.`:'☣️ No hay nadie cerca a quien contagiar.');return;}
@@ -2239,6 +2534,9 @@ function pointerMove(ptr){
     for(let k=1;k<=n;k++)hit+=smashAt({x:a.x+(p.x-a.x)*k/n,y:a.y+(p.y-a.y)*k/n});
     if(hit)buzz(ptr,.9,80);ptr.drag.last=p;
   }
+  else if(ptr.drag&&ptr.drag.trees){
+    if(Math.hypot(p.x-ptr.drag.last.x,p.y-ptr.drag.last.y)>15){plantForest(p.x,p.y,6,18);ptr.drag.last=p;buzz(ptr,.15,15);}
+  }
   else if(ptr.drag&&ptr.drag.last){paintLine(ptr.drag.last,p,mode==='wall'?2:0);ptr.drag.last=p;}
   if(ptr.drag&&ptr.drag.start)ptr.drag.cur=p;
   if(ptr.carry&&!blocked(p.x,p.y)){ptr.carry.x=ptr.carry.px=p.x;ptr.carry.y=ptr.carry.py=p.y;}
@@ -2258,7 +2556,7 @@ function mouseRay(e){
   ndc.set(((e.clientX-r.left)/r.width)*2-1,-((e.clientY-r.top)/r.height)*2+1);
   raycaster.setFromCamera(ndc,camera);mousePtr.ray.copy(raycaster.ray);mousePtr.active=true;computeHit(mousePtr);
 }
-const TAP_TOOLS=new Set(['look','add','vax','virus','fire','rain','plague','locust']);
+const TAP_TOOLS=new Set(['look','add','vax','virus','fire','rain','plague','locust','lake','meteor']);
 const tapTool=()=>TAP_TOOLS.has(mode);
 canvas.addEventListener('pointerdown',e=>{
   if(e.button!==0||renderer.xr.isPresenting)return;
@@ -2450,10 +2748,16 @@ function gamepadUpdate(ptr,dt){
   const gp=ptr.source&&ptr.source.gamepad;if(!gp)return;
   const dz=v=>Math.abs(v)<.18?0:v,x=dz(gp.axes[2]||0),y=dz(gp.axes[3]||0);
   if(ptr.source.handedness==='left'){
-    // caminar: hacia donde miras (adelante/atrás y de lado), con arranque suave
-    const {yaw}=headPose(),tx=(-Math.sin(yaw)*-y+Math.cos(yaw)*x)*1.5,tz=(-Math.cos(yaw)*-y-Math.sin(yaw)*x)*1.5;
-    ptr.vx=(ptr.vx||0)+(tx-(ptr.vx||0))*Math.min(1,dt*8);ptr.vz=(ptr.vz||0)+(tz-(ptr.vz||0))*Math.min(1,dt*8);
+    // caminar: hacia donde miras (adelante/atrás y de lado), con arranque suave.
+    // En modo vuelo, "adelante" incluye subir o bajar según hacia dónde mires.
+    const {yaw}=headPose();let tx=(-Math.sin(yaw)*-y+Math.cos(yaw)*x)*1.5,tz=(-Math.cos(yaw)*-y-Math.sin(yaw)*x)*1.5,ty=0;
+    if(vr.fly){
+      const cam=renderer.xr.getCamera();cam.getWorldDirection(_hd);
+      tx=(_hd.x*-y+Math.cos(yaw)*x)*1.5;tz=(_hd.z*-y-Math.sin(yaw)*x)*1.5;ty=_hd.y*-y*1.5;
+    }
+    ptr.vx=(ptr.vx||0)+(tx-(ptr.vx||0))*Math.min(1,dt*8);ptr.vz=(ptr.vz||0)+(tz-(ptr.vz||0))*Math.min(1,dt*8);ptr.vy=(ptr.vy||0)+(ty-(ptr.vy||0))*Math.min(1,dt*8);
     rig.position.x+=ptr.vx*dt;rig.position.z+=ptr.vz*dt;
+    if(vr.fly)rig.position.y=clamp(rig.position.y+ptr.vy*dt,-.8,ROOM_H-1.9);
   }else{
     // estándar de Quest: ← → gira 45° de golpe; ↑ muestra el arco y al soltar te teletransporta
     const horiz=Math.abs(x)>.7&&Math.abs(y)<.55,fwd=y<-.6&&Math.abs(x)<.6;
@@ -2493,6 +2797,47 @@ function homeVR(){
   rig.position.set(0,0,0);rig.rotation.set(0,0,0);
   world.position.copy(WORLD_HOME);world.scale.setScalar(1);
   vr.placed=false;setTimeout(placePanel,50);
+}
+/* ---------- Viajar: ponerte en un sitio concreto mirando hacia algo ---------- */
+function viewFrom(headLocal,lookLocal){
+  world.updateMatrixWorld(true);
+  const hw=world.localToWorld(headLocal.clone()),lw=world.localToWorld(lookLocal.clone());
+  if(renderer.xr.isPresenting){
+    const {pos}=headPose();rig.position.add(hw.clone().sub(pos));
+    const want=Math.atan2(-(lw.x-hw.x),-(lw.z-hw.z));let da=want-headPose().yaw;da=Math.atan2(Math.sin(da),Math.cos(da));
+    if(Math.abs(da)>.02)snapTurn(da);
+    if(vr.show)setTimeout(()=>{if(!vr.placed)placePanel();},30);
+  }else{camera.position.copy(hw);controls.target.copy(lw);controls.update();}
+}
+/* encima de los 6 recipientes (i = -1) o de uno concreto, mirando hacia abajo */
+function goAbove(i){
+  let x,y,hgt,back;
+  if(i<0){const a=RECTS[0],b=RECTS[5];x=((a.x+b.x+b.w)/2)*T;y=((a.y+b.y+b.h)/2)*T;hgt=1.25;back=.55;}
+  else{const R=RECTS[i];x=(R.x+R.w/2)*T;y=(R.y+R.h/2)*T;hgt=.55;back=.32;}
+  const q=P3(x,y),c=new THREE.Vector3(q.x,q.y,q.z);
+  viewFrom(c.clone().add(new THREE.Vector3(0,hgt,back)),c);
+  if(i>=0)selectR(i);
+}
+function goRegion(id){
+  const r=REGIONS.find(r=>r.id===id),q=P3(r.x0+r.w/2,r.y0+r.h/2),c=new THREE.Vector3(q.x,q.y,q.z);
+  const off=id==='floor'?new THREE.Vector3(0,1.5,r.h*K/2+1.1):new THREE.Vector3(id==='left'?1.3:-1.3,1.1,0);
+  viewFrom(c.clone().add(off),c);
+}
+function resetDeskView(){camera.position.copy(DESK_CAM);controls.target.copy(DESK_TARGET);controls.update();}
+/* ⚡ salto instantáneo con resumen */
+function doInstantJump(n){
+  if(busy)return;
+  for(const p of pointers){dropCarry(p);pointerUp(p);}
+  const t0=performance.now(),lv0=Object.values(S.tribes).reduce((a,t)=>Math.max(a,t.lvl),0);
+  const r=instantJump(n==='era'?0:n,n==='era');
+  if(r.log.maxed){toast('Todos los pueblos ya han llegado a la última era (sintética).');return;}
+  bgDirty=wallsDirty=roadsDirty=true;updateUI();save();
+  const L=r.log,parts=[];
+  if(L.tribe)parts.push(`${L.tribe} pueblos nuevos`);if(L.era)parts.push(`${L.era} avances de era`);
+  if(L.war)parts.push(`${L.war} guerras`);if(L.colony)parts.push(`${L.colony} colonias`);if(L.launch)parts.push(`${L.launch} cohetes`);
+  if(L.cureFound)parts.push(`${L.cureFound} curas`);if(L.lake||L.pond)parts.push(`${(L.lake||0)+(L.pond||0)} lagos`);
+  const lv=Object.values(S.tribes).reduce((a,t)=>Math.max(a,t.lvl),0);
+  toast(`⚡ +${fmt(r.done)} ciclos en ${((performance.now()-t0)/1000).toFixed(1)} s${parts.length?': '+parts.join(', '):''}${lv>lv0?` · era máxima: ${lv}`:''}.`);
 }
 /* Altura: para ver desde más arriba o ponerte a la altura de los organismos */
 function changeHeight(d){
@@ -2562,11 +2907,12 @@ function load(){
     const d=JSON.parse(raw);if(d.v!==2)return false;
     S=d.S;S.vis??=1.6;S.cap??=1500;S.ships??=[];S.ruins??=[];
     S.fires??=[];S.floods??=[];S.swarms??=[];S.shots??=[];S.plagueSeq??=0;S.sickN??=0;S.vStrain??=1;S.evo??=1;
+    S.lakes??=[];S.wild??=[];S.meteors??=[];S.daynight??=true;
     wallT.set(d.wt);wallHP.set(d.wh);for(let i=0;i<wallT.length;i++)if(wallT[i]===VOID)wallHP[i]=WALL_HP[VOID];
     S.creatures=S.creatures.map(o=>Object.assign(blankC(),o,{held:false}));
     for(const sh of S.ships)sh.crew=sh.crew.map(o=>Object.assign(blankC(),o));
     for(const id in S.tribes){const tb=S.tribes[id];tb.kind??='tec';tb.buildings??=[];tb.trees??=[];tb.lastShip??=S.tick;tb.arms??=0;tb.cures??=[];tb.cureProg??={};tb.look??=makeLook(tb.type);}
-    zonesDirty=true;computeZones();wallsDirty=true;return true;
+    zonesDirty=true;computeZones();rebuildWater();wallsDirty=true;return true;
   }catch(e){S=null;return false;}
 }
 document.addEventListener('visibilitychange',()=>{if(document.hidden)save();});
@@ -2611,7 +2957,8 @@ updateUI();drawBG();rebuildWalls();resize();setupVR();drawPanel();
 renderer.setAnimationLoop(loop);
 setTimeout(()=>toast('La vida empieza en R5 como células. Si rompen las paredes, se escaparán por la mesa.'),600);
 window.lab={get S(){return S;},step,startJump,stopJump,emergency,vaccinate,camera,controls,world,rig,drawPanel,vr,music,setMode,focusOn,stageOf,P3,REGIONS,launchShip,
-  startFire,startRain,startPlague,startSwarm,declareWar,makePeace,armTribe,findBuildingAt,destroyBuilding,setSpeed,PROF,smashWalls,teleportTarget,computeHit,RECTS};
+  startFire,startRain,startPlague,startSwarm,declareWar,makePeace,armTribe,findBuildingAt,destroyBuilding,setSpeed,PROF,smashWalls,teleportTarget,computeHit,RECTS,
+  addLake,plantForest,startMeteor,instantJump,doInstantJump,goAbove,goRegion};
 </script>
 </body>
 </html>
