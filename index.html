@@ -300,6 +300,7 @@ function zombieStep(c,E){
   if(tg)c.dir=Math.atan2(tg.y-c.y,tg.x-c.x);
   else if(al&&aD>64&&!c.mut.alpha)c.dir=Math.atan2(al.y-c.y,al.x-c.x);
   else if(c.mut.str){if(c.rage<=0)pickRage(c);c.rage--;c.dir=Math.atan2(c.ry-c.y,c.rx-c.x);}
+  else if(c.rage>0){c.rage--;c.dir=Math.atan2(c.ry-c.y,c.rx-c.x)+gauss()*.2;}   // una horda que marcha hacia un pueblo
   else c.dir+=gauss()*0.4;
   moveC(c,tg?Math.min(spd,Math.sqrt(td)):spd,0);
   if(tg&&c.rest===0){
@@ -310,6 +311,10 @@ function zombieStep(c,E){
       if(sz(tg)>sz(c)*2.2&&Math.random()<0.5){kill(c,'aplastado por un gigante');return true;}
       if(tg.mut.spines&&Math.random()<0.4){kill(c,'pinchado por unas espinas');return true;}
       if(tg.mut.antidote){cure(c);return false;}
+      const ztb=civOf(tg);
+      if(ztb){learn(ztb,'zombi',.6);const zl=inv(ztb,'zombi');
+        if(zl>=2&&tribeNear(tg,12)>=2&&Math.random()<.5){kill(c,'abatido por cazadores de zombis');return true;}
+        if(zl&&Math.random()<[0,.25,.4,.65][zl]){c.rest=40;return false;}}   // cuarentena y suero: se libra del mordisco
       infect(tg,c.strain||1);c.rest=40;
     }
   }
@@ -346,6 +351,8 @@ function step(){
   for(const c of S.creatures)cgrid[cellOf(c.x,c.y)].push(c);
   _t=pt('grids',_t);
   if(S.fires.length||S.floods.length||S.swarms.length)disasterTick(t);
+  if(S.tornados.length)tornadoTick();
+  if(S.defend)defendGameTick();
   if(S.sickN&&t%4===0)plagueTick();
   if(S.shots.length)shotTick();
   _t=pt('disasters',_t);
@@ -444,9 +451,9 @@ function step(){
       const reach=s+2.5;
       if((foe.x-c.x)**2+(foe.y-c.y)**2<reach*reach){
         const ft=civOf(foe),home=ft&&(foe.x-ft.hx)**2+(foe.y-ft.hy)**2<ft.r2;
-        const a=power(c)*(inWalls(tb,c)?tb.def:1),b=power(foe)*(home?1.3:1)*(inWalls(ft,foe)?ft.def:1);
+        const a=power(c)*(inWalls(tb,c)?tb.def:1)*(1+.12*inv(tb,'guerra')),b=power(foe)*(home?1.3:1)*(inWalls(ft,foe)?ft.def:1)*(1+.12*inv(ft,'guerra'));
         const loser=a>=b?foe:c,winner=loser===c?foe:c,lt=civOf(winner);c.hitT=foe.hitT=S.tick;
-        kill(loser,'caído en la guerra'+(lt?' contra los '+lt.name:''));hooks.event('fight',loser);
+        kill(loser,'caído en la guerra'+(lt?' contra los '+lt.name:''));hooks.event('fight',loser);learn(civOf(loser),'guerra',.4);
         if(loser.dead){pop--;if(winner.type==='d')winner.energy+=8*sz(loser)**2;if(loser===c)continue;}
       }
     }
@@ -565,7 +572,7 @@ function quota(tb,k){
     case 'muralla':return L>=4&&(threatened(tb)||(K2==='des'&&L>=6))?1:0;
     case 'atalaya':return L>=4&&(threatened(tb)||K2==='des')?Math.min(4,L-2):0;
     case 'fortaleza':return L>=5&&(threatened(tb)||K2==='des')?1:0;
-    case 'escudo':return L>=8&&threatened(tb)?1:0;
+    case 'escudo':return L>=8&&(threatened(tb)||inv(tb,'meteorito')>=2)?1:0;
     // ✨ era sintética: ya no hay casas, sino hábitats para la vida sintética
     case 'datos':return L>=10?(K2==='tec'?6:K2==='des'?3:2):0;
     case 'esfera':return L>=10?(K2==='eco'||K2==='mar'?6:K2==='tec'?4:0):0;
@@ -805,7 +812,7 @@ function disasterTick(t){
       // tierra quemada alrededor: no vuelve a brotar en un buen rato
       {const tx0=Math.floor(f.x/T),ty0=Math.floor(f.y/T);for(let dy=-2;dy<=2;dy++)for(let dx=-2;dx<=2;dx++){const xx=tx0+dx,yy=ty0+dy;if(xx>=0&&yy>=0&&xx<TW&&yy<TH)scorch[yy*TW+xx]=t+2400;}}
       nearby(f.x,f.y,7,o=>{if(!o.dead&&(o.x-f.x)**2+(o.y-f.y)**2<49&&Math.random()<0.12)kill(o,'quemado');});
-      forBuildingsNear(f.x,f.y,5,(tb,i,b)=>{fuel+=4;b.hp=(b.hp??BSIZE[b.k])-0.45;if(b.hp<=0){destroyBuilding(tb,i,'fuego');born.push({x:b.x,y:b.y,t:0,life:rand(500,700)});}});
+      forBuildingsNear(f.x,f.y,5,(tb,i,b)=>{fuel+=4;learn(tb,'fuego',.05);b.hp=(b.hp??BSIZE[b.k])-0.45*(inv(tb,'fuego')>=1?.55:1);if(b.hp<=0){destroyBuilding(tb,i,'fuego');born.push({x:b.x,y:b.y,t:0,life:rand(500,700)});}});
       for(const id in S.tribes){const tr=S.tribes[id].trees;for(let i=tr.length-1;i>=0;i--)if((tr[i].x-f.x)**2+(tr[i].y-f.y)**2<100){born.push({x:tr[i].x,y:tr[i].y,t:0,life:rand(450,650)});tr.splice(i,1);fuel+=5;}}
       for(let i=S.wild.length-1;i>=0;i--){const tr=S.wild[i];if((tr.x-f.x)**2+(tr.y-f.y)**2<110){born.push({x:tr.x,y:tr.y,t:0,life:rand(450,650)});S.wild.splice(i,1);fuel+=5;}}
       if(waterT[tIdx(f.x,f.y)])f.out=true;   // el fuego no arde sobre el agua
@@ -822,7 +829,7 @@ function disasterTick(t){
       // Cuanto más avanzados, más lejos llegan y más rápido actúan (con parque de bomberos, mucho más).
       for(const id in S.tribes){const tb=S.tribes[id];if(tb.lvl<5||!nearTribe(tb,f.x,f.y,tb.lvl>=8?60:20))continue;
         const base=tb.lvl>=8?0.03:tb.lvl>=7?0.016:0.004*(tb.lvl-4);
-        const p=base*(tb.kind==='eco'||tb.kind==='mar'?1.4:1)*(hasB(tb,'bomberos')?2.5:1)*(nearWater(f.x,f.y,40)?1.5:1)*(1+.25*(tb.watch||0));
+        const p=base*(tb.kind==='eco'||tb.kind==='mar'?1.4:1)*(hasB(tb,'bomberos')?2.5:1)*(nearWater(f.x,f.y,40)?1.5:1)*(1+.25*(tb.watch||0))*(inv(tb,'fuego')>=2?1.7:1)+(inv(tb,'fuego')>=3?.05:0);
         if(Math.random()<p){f.out=true;hooks.event('fireout',tb,f);break;}}
       for(const fl of S.floods)if((fl.t<380||fl.lvl>0.15)&&(fl.x-f.x)**2+(fl.y-f.y)**2<fl.r*fl.r)f.out=true;
       if(f.t>=f.life)f.out=true;
@@ -886,7 +893,7 @@ function plagueTick(){
 }
 /* 💣 Artillería: proyectiles de un pueblo en guerra hacia el enemigo */
 function fireShots(tb,en){
-  const n=Math.min(3,tb.lvl-5)*(tb.kind==='des'?2:1)+(tb.arms||0);
+  const n=Math.min(3,tb.lvl-5)*(tb.kind==='des'?2:1)+(tb.arms||0)+(inv(tb,'guerra')>=2?1:0);
   const from=tb.buildings.find(b=>b.k==='canon')||{x:tb.hx,y:tb.hy};
   const bl=en.buildings.filter(b=>!RING_B.has(b.k)),w=wallOf(en),sh=shieldOf(en);
   for(let k=0;k<n;k++){
@@ -916,7 +923,8 @@ function shotTick(){
         else destroyBuilding(en,hit.i,'bombardeo');}
       hurtWalls(s.x1,s.y1,3,8,'bombardeo');en.threat=S.tick;
     }
-    nearby(s.x1,s.y1,9,o=>{if(!o.dead&&(o.x-s.x1)**2+(o.y-s.y1)**2<81&&Math.random()<0.5)kill(o,'bombardeado');});
+    nearby(s.x1,s.y1,9,o=>{if(!o.dead&&(o.x-s.x1)**2+(o.y-s.y1)**2<81&&Math.random()<(inv(civOf(o),'guerra')>=1?.25:.5))kill(o,'bombardeado');});
+    if(en)learn(en,'guerra',.3);
     if(s.lvl>=7&&Math.random()<0.35&&!blocked(s.x1,s.y1))S.fires.push({x:s.x1,y:s.y1,t:0,life:100});
     hooks.event('impact',s);
   }
@@ -993,6 +1001,9 @@ function meteorTick(){
     if(m.sf===undefined){m.sf=0;m.sid=0;
       for(const id in S.tribes){const sh=shieldOf(S.tribes[id]);if(!sh)continue;const d2=(m.x-sh.x)**2+(m.y-sh.y)**2;
         if(d2<sh.r*sh.r){m.hy=.75*sh.r*Math.sqrt(1-d2/(sh.r*sh.r));m.sf=1-m.hy/METEOR_H;m.sid=+id;break;}}}
+    // cañones antimeteorito: lo revientan en el aire aunque no haya cúpula
+    if(m.sf===0&&!m.gun){m.gun=-1;for(const id in S.tribes){const tb=S.tribes[id];if(inv(tb,'meteorito')>=3&&tb.lvl>=7&&nearTribe(tb,m.x,m.y,60)&&Math.random()<.65){m.gun=+id;m.hy=140;break;}}}
+    if(m.gun>0&&m.t>=m.dur*(1-140/METEOR_H)){const tb=S.tribes[m.gun];m.done=true;if(tb)hooks.event('meteorShot',m,tb);continue;}
     if(m.sid&&m.t>=m.sf*m.dur){
       const tb=S.tribes[m.sid],sh=tb&&shieldOf(tb);m.sid=0;
       if(sh&&sh.e>=40){
@@ -1006,13 +1017,14 @@ function meteorTick(){
     const R=30;
     forBuildingsNear(m.x,m.y,R,(tb,i)=>destroyBuilding(tb,i,'meteorito'));
     hurtWalls(m.x,m.y,R,35,'meteorito');alarmNear(m.x,m.y,150,'meteorito');
+    for(const id in S.tribes){const tb=S.tribes[id];if(nearTribe(tb,m.x,m.y,150))learn(tb,'meteorito',8);}
     S.wild=S.wild.filter(tr=>(tr.x-m.x)**2+(tr.y-m.y)**2>R*R);
     for(const id in S.tribes){const tb=S.tribes[id];tb.trees=tb.trees.filter(tr=>(tr.x-m.x)**2+(tr.y-m.y)**2>R*R);}
     const tx0=Math.floor(m.x/T),ty0=Math.floor(m.y/T);
     for(let dy=-5;dy<=5;dy++)for(let dx=-5;dx<=5;dx++){const xx=tx0+dx,yy=ty0+dy;if(xx<0||yy<0||xx>=TW||yy>=TH||dx*dx+dy*dy>25)continue;const i=yy*TW+xx;
       if(wallT[i]&&wallT[i]!==VOID)setWall(i,0);scorch[i]=S.tick+4000;}
     for(const c of S.creatures){const d2=(c.x-m.x)**2+(c.y-m.y)**2;
-      if(d2<26*26){kill(c,'meteorito');continue;}
+      if(d2<26*26){if(inv(civOf(c),'meteorito')>=1&&Math.random()<.5)continue;kill(c,'meteorito');continue;}   // con observatorio, la mitad huye a tiempo
       if(d2<80*80&&Math.random()<.25)applyMut(c,pick(Object.keys(MUTS)));   // polvo cósmico: mutaciones
     }
     for(let k=0;k<26&&S.fires.length<FIRE_CAP;k++){const a=rand(0,6.283),d=rand(20,45),fx=m.x+Math.cos(a)*d,fy=m.y+Math.sin(a)*d;if(!blocked(fx,fy))S.fires.push({x:fx,y:fy,t:0,life:rand(400,600)});}
@@ -1021,6 +1033,195 @@ function meteorTick(){
     hooks.event('meteor',m);
   }
   S.meteors=S.meteors.filter(m=>!m.done);
+}
+
+
+/* ---- 💡 Inventos: los pueblos aprenden de lo que les ataca ----
+   Cada amenaza que sufren (fuego, tornados, zombis, tu láser, meteoritos, guerra) les hace pensar en
+   cómo defenderse. Cuanto más avanzados (y si son tecnológicos), antes inventan. Cada invento tiene 3 niveles. */
+const INVENT={
+  fuego:['🧯 cortafuegos','🚒 brigadas rápidas','💦 aspersores automáticos'],
+  tornado:['🕳️ refugios subterráneos','⚓ anclajes en los edificios','🌀 estabilizadores del clima'],
+  zombi:['🚧 cuarentena','🏹 cazadores de zombis','💉 suero contra el virus'],
+  laser:['🏃 vigías que avisan del láser','🪞 espejos que lo reflejan','🔆 blindaje antiláser en la cúpula'],
+  meteorito:['🔭 observatorio','📡 alerta temprana con cúpula','🚀 cañones antimeteorito'],
+  guerra:['⛏️ trincheras','🎯 artillería mejorada','🛡️ escudos portátiles'],
+};
+const INV_T=[12,35,80];
+const inv=(tb,k)=>tb&&tb.inv?tb.inv[k]|0:0;   // nivel del invento (0..3)
+function learn(tb,k,amt){
+  if(!tb||tb.lvl<2)return;
+  tb.ideas??={};tb.inv??={};
+  tb.ideas[k]=(tb.ideas[k]||0)+amt*(.4+tb.lvl/8)*(tb.kind==='tec'?1.3:1);
+  const lv=inv(tb,k);
+  tb.invAt??={};
+  if(lv<3&&tb.ideas[k]>=INV_T[lv]&&tb.lvl>=2+lv*2&&S.tick-(tb.invAt[k]??-1e9)>1500){tb.invAt[k]=S.tick;tb.inv[k]=lv+1;tb.know+=80*(lv+1);hooks.event('invent',tb,{k,name:INVENT[k][lv],lv:lv+1});}
+}
+
+/* ---- 🌪️ Tornado: va dando tumbos y arrasa lo que encuentra; los pueblos aprenden a refugiarse ---- */
+function startTornado(x,y,dir){S.tornados.push({x,y,dir:dir??rand(0,6.283),t:0,life:rand(650,900),r:16});}
+function tornadoTick(){
+  for(const tw of S.tornados){
+    tw.t++;tw.dir+=gauss()*.12;
+    const reg=regionOf(tw.x,tw.y),nx=tw.x+Math.cos(tw.dir)*1.1,ny=tw.y+Math.sin(tw.dir)*1.1,ni=tIdx(nx,ny);
+    if(regionOf(nx,ny)!==reg||nx<reg.x0+8||ny<reg.y0+8||nx>reg.x0+reg.w-8||ny>reg.y0+reg.h-8||ni<0||wallT[ni]===VOID)tw.dir+=Math.PI*(.6+Math.random()*.8);
+    else{tw.x=nx;tw.y=ny;}
+    const r=tw.r,r2=r*r;
+    nearby(tw.x,tw.y,r,o=>{
+      if(o.dead||o.held)return;const d2=(o.x-tw.x)**2+(o.y-tw.y)**2;if(d2>r2)return;
+      const tb=civOf(o);
+      if(Math.random()<.02*(inv(tb,'tornado')>=1?.35:1)){kill(o,'arrastrado por un tornado');return;}
+      const a=Math.atan2(o.y-tw.y,o.x-tw.x)+.25,d=Math.sqrt(d2)*.96,x2=tw.x+Math.cos(a)*d,y2=tw.y+Math.sin(a)*d;   // el remolino los arrastra
+      if(!blocked(x2,y2)){o.x=x2;o.y=y2;}
+    });
+    nearbyP(tw.x,tw.y,r,p=>{p.dead=true;});
+    if(tw.t%3===0){
+      forBuildingsNear(tw.x,tw.y,r*.6,(tb,i,b)=>{b.hp=(b.hp??BSIZE[b.k])-.9*(inv(tb,'tornado')>=2?.35:1);if(b.hp<=0)destroyBuilding(tb,i,'tornado');});
+      hurtWalls(tw.x,tw.y,r*.5,.6,'tornado');
+      for(let i=S.wild.length-1;i>=0;i--){const tr=S.wild[i];if((tr.x-tw.x)**2+(tr.y-tw.y)**2<r2*.5&&Math.random()<.3)S.wild.splice(i,1);}
+      for(const id in S.tribes){const tr=S.tribes[id].trees;for(let i=tr.length-1;i>=0;i--)if((tr[i].x-tw.x)**2+(tr[i].y-tw.y)**2<r2*.5&&Math.random()<.3)tr.splice(i,1);}
+      const ti=tIdx(tw.x+rand(-r*.5,r*.5),tw.y+rand(-r*.5,r*.5));if(ti>=0&&wallT[ti]&&wallT[ti]!==VOID)hitWall(ti,6);   // arranca muros y cristal
+    }
+    if(tw.t%50===0)for(const id in S.tribes){
+      const tb=S.tribes[id];if(!nearTribe(tb,tw.x,tw.y,40))continue;
+      alarm(tb,'tornado');learn(tb,'tornado',2);
+      if(inv(tb,'tornado')>=3&&tb.lvl>=6&&!tw.calm){tw.calm=1;tw.life=Math.min(tw.life,tw.t+120);hooks.event('tornadoStop',tb);}
+    }
+    if(tw.t>=tw.life)tw.done=true;
+  }
+  S.tornados=S.tornados.filter(t=>!t.done);
+}
+
+/* ---- 🔴 Láser: lo que apuntas se desintegra ----
+   fino: un solo objetivo (un ser, un edificio, un árbol o un muro) · ancho: todo lo que hay en un círculo.
+   Los pueblos aprenden: vigías que avisan (esquivan), espejos (reflejan) y blindaje en la cúpula (lo para). */
+function laserAt(x,y,wide){
+  const out={n:0,blocked:0,dodge:0};
+  for(const id in S.tribes){const tb=S.tribes[id],sh=shieldOf(tb);
+    if(sh&&inv(tb,'laser')>=3&&(x-sh.x)**2+(y-sh.y)**2<sh.r*sh.r&&sh.e>=1){sh.e-=1;sh.hitT=S.tick;out.blocked=1;learn(tb,'laser',.1);return out;}}
+  const dodge=o=>{const tb=civOf(o),l=inv(tb,'laser');if(tb)learn(tb,'laser',.5);return l>0&&Math.random()<[0,.3,.4,.55][l];};
+  const mirror=tb=>{learn(tb,'laser',.6);return inv(tb,'laser')>=2&&Math.random()<.35;};
+  const R=wide?14:4;
+  if(wide){
+    for(const o of S.creatures)if(!o.dead&&(o.x-x)**2+(o.y-y)**2<R*R){if(dodge(o)){out.dodge++;continue;}kill(o,'desintegrado por el láser',true);out.n++;}
+    forBuildingsNear(x,y,R*.6,(tb,i)=>{if(mirror(tb)){out.blocked=1;return;}destroyBuilding(tb,i,'láser');out.n++;});
+    out.n+=hurtWalls(x,y,R*.6,12,'láser');
+    S.wild=S.wild.filter(tr=>(tr.x-x)**2+(tr.y-y)**2>R*R||!++out.n);
+    for(const id in S.tribes){const tb=S.tribes[id];tb.trees=tb.trees.filter(tr=>(tr.x-x)**2+(tr.y-y)**2>R*R||!++out.n);}
+  }else{
+    let best=null,bd=6*6;for(const o of S.creatures){if(o.dead||o.held)continue;const d=(o.x-x)**2+(o.y-y)**2;if(d<bd){bd=d;best=o;}}
+    if(best){
+      if(dodge(best)){out.dodge=1;const a=rand(0,6.283),nx=best.x+Math.cos(a)*7,ny=best.y+Math.sin(a)*7;if(!blocked(nx,ny)){best.x=nx;best.y=ny;}}
+      else{kill(best,'desintegrado por el láser',true);out.n=1;}
+      return out;
+    }
+    const hit=findBuildingAt(x,y,2);
+    if(hit){
+      if(mirror(hit.tb)){out.blocked=1;return out;}
+      const t0=TOUGH[hit.b.k];if(t0){hit.b.hp=(hit.b.hp??t0)-5;if(hit.b.hp>0){out.n=1;return out;}}
+      destroyBuilding(hit.tb,hit.i,'láser');out.n=1;return out;
+    }
+    if(hurtWalls(x,y,2,10,'láser')){out.n=1;return out;}
+    let tl=null,td=25,tlist=null;
+    for(const tr of S.wild){const d=(tr.x-x)**2+(tr.y-y)**2;if(d<td){td=d;tl=tr;tlist=S.wild;}}
+    for(const id in S.tribes)for(const tr of S.tribes[id].trees){const d=(tr.x-x)**2+(tr.y-y)**2;if(d<td){td=d;tl=tr;tlist=S.tribes[id].trees;}}
+    if(tl){tlist.splice(tlist.indexOf(tl),1);out.n=1;return out;}
+    const i=tIdx(x,y);if(i>=0&&wallT[i]&&wallT[i]!==VOID){hitWall(i,60);out.n=1;}
+  }
+  for(const p of S.plants)if(!p.dead&&(p.x-x)**2+(p.y-y)**2<R*R)p.dead=true;
+  const tx0=Math.floor(x/T),ty0=Math.floor(y/T),rt=Math.ceil(R/T);
+  for(let dy=-rt;dy<=rt;dy++)for(let dx=-rt;dx<=rt;dx++){const xx=tx0+dx,yy=ty0+dy;if(xx>=0&&yy>=0&&xx<TW&&yy<TH&&dx*dx+dy*dy<=rt*rt)scorch[yy*TW+xx]=S.tick+1500;}
+  return out;
+}
+
+/* ---- 🎮 Defiende tu colonia ----
+   Crías un pueblo pequeño y, cada cierto tiempo, llega una oleada que intenta destruirlo: manadas,
+   hordas de zombis, saqueadores, incendiarios, tornados, un titán mutante, plagas, asedios, lluvias
+   de meteoritos y ejércitos sintéticos. Tú les ayudas con las herramientas (el láser, la lluvia…)
+   y, cada oleada que superan, tu pueblo aprende, inventa defensas y llegan refugiados. */
+const WAVES=[
+  {k:'manada',name:'🐺 Manada de depredadores',inv:'guerra'},{k:'zombis',name:'🧟 Horda de zombis',inv:'zombi'},
+  {k:'saqueo',name:'⚔️ Saqueadores',inv:'guerra'},{k:'fuego',name:'🔥 Incendiarios',inv:'fuego'},
+  {k:'tornado',name:'🌪️ Tornados',inv:'tornado'},{k:'titan',name:'👹 El Titán mutante',inv:'guerra'},
+  {k:'plaga',name:'☣️ Plaga y langostas',inv:'zombi'},{k:'asedio',name:'🏰 Asedio con catapultas',inv:'guerra'},
+  {k:'meteoros',name:'☄️ Lluvia de meteoritos',inv:'meteorito'},{k:'sinteticos',name:'🤖 Ejército sintético',inv:'guerra'},
+];
+function edgePoint(tb,dmin,dmax){
+  const reg=regionOf(tb.hx,tb.hy),hz=zoneAt(tb.hx,tb.hy);
+  for(let k=0;k<50;k++){const a=rand(0,6.283),d=rand(dmin,dmax),x=tb.hx+Math.cos(a)*d,y=tb.hy+Math.sin(a)*d,i=tIdx(x,y);
+    if(i<0||regionOf(x,y)!==reg||blocked(x,y)||waterT[i]||zoneAt(x,y)!==hz)continue;return{x,y};}
+  return{x:tb.hx+rand(-30,30),y:tb.hy+rand(-30,30)};
+}
+function startDefend(id){
+  const tb=S.tribes[id];if(!tb)return false;
+  S.defend={id,wave:0,next:S.tick+900,waveAt:0,kind:null,title:'',foeIds:[],raid:0,left:0,metQ:0,over:false,best:S.defend?S.defend.best:0};
+  hooks.event('defendStart',tb);return true;
+}
+function newColonyGame(){
+  fresh();
+  const x=MAIN.w*.5,y=MAIN.h-95;   // en la parte delantera de la mesa, fuera de los recipientes
+  const tb=newTribe('p',x,y,'tec');tb.lvl=3;tb.know=LV[3];
+  for(let i=0;i<18;i++){const g=baseGenome('p');g.intel=rand(.5,.6);const c=mkC('p',i%2?'f':'m',x+rand(-12,12),y+rand(-12,12),g,3,18*g.size*g.size);
+    if(blocked(c.x,c.y)){c.x=x;c.y=y;}c.tribe=tb.id;c.age=rand(300,900);S.creatures.push(c);}
+  for(let k=0;k<180;k++){const px=x+rand(-100,100),py=y+rand(-80,40);if(!blocked(px,py))S.plants.push({x:px,y:py,z:zoneAt(px,py),dead:false});}
+  for(let g=0;g<4;g++)growTown(tb);
+  startDefend(tb.id);return tb;
+}
+function spawnThreat(k,tb,n){
+  const D=S.defend,p=edgePoint(tb,170,320),sc=1+tb.n/90;   // cuanto más grande la colonia, más fuerte el ataque
+  n=n*sc;
+  const rush=c=>{c.rx=tb.hx+rand(-15,15);c.ry=tb.hy+rand(-15,15);c.rage=1500;D.foeIds.push(c.id);if(blocked(c.x,c.y)){c.x=p.x;c.y=p.y;}S.creatures.push(c);};
+  if(k==='manada'||k==='titan'){
+    const m=Math.round(k==='titan'?2+n/3:3+n*1.2);
+    for(let i=0;i<m;i++){const g=baseGenome('d');g.size=Math.min(3.4,g.size*(1+.05*n));g.speed*=1.1;rush(mkC('d',i%2?'f':'m',p.x+rand(-10,10),p.y+rand(-10,10),g,1,30*g.size*g.size));}
+    if(k==='titan'){const g=baseGenome('d');g.size=3.4;g.speed=1.5;g.sense=40;const c=mkC('d','m',p.x,p.y,g,1,600);
+      for(const mu of ['giant','str','spines','regen','alpha'])applyMut(c,mu);c.gm=2.2;c.maxAge=1e6;rush(c);}
+  }else if(k==='zombis'){
+    for(let i=0;i<Math.round(5+n*2);i++){const g=baseGenome('p');g.speed*=1.25;const c=mkC('p','m',p.x+rand(-14,14),p.y+rand(-14,14),g,1,20);turnZombie(c);c.strain=S.vStrain;rush(c);}
+  }else if(k==='saqueo'||k==='asedio'||k==='sinteticos'){
+    const lv=k==='sinteticos'?10:k==='asedio'?Math.max(6,tb.lvl):clamp(tb.lvl,3,9);
+    const rt=newTribe(Math.random()<.4?'d':'p',p.x,p.y,'des');rt.lvl=lv;rt.know=LV[lv];rt.raider=true;rt.arms=Math.min(3,Math.floor(n/3));if(rt.lvl>=7)rt.inv={guerra:Math.min(3,Math.floor(n/4))};
+    for(let i=0;i<Math.round(4+n*1.5);i++){const g=baseGenome(rt.type);g.intel=.6;const c=mkC(rt.type,i%2?'f':'m',p.x+rand(-10,10),p.y+rand(-10,10),g,5,30*g.size*g.size);
+      if(blocked(c.x,c.y)){c.x=p.x;c.y=p.y;}c.tribe=rt.id;c.warrior=true;c.age=400;S.creatures.push(c);rt.n++;}
+    if(tb.war&&S.tribes[tb.war])S.tribes[tb.war].war=0;
+    rt.war=tb.id;tb.war=rt.id;rt.warSince=tb.warSince=S.tick;D.raid=rt.id;
+  }else if(k==='fuego'){
+    for(let i=0;i<3+Math.floor(n/3);i++){const q=edgePoint(tb,35,90);startFire(q.x,q.y);}
+  }else if(k==='tornado'){
+    for(let i=0;i<1+Math.floor(n/5);i++){const q=edgePoint(tb,150,260);startTornado(q.x,q.y,Math.atan2(tb.hy-q.y,tb.hx-q.x));}
+  }else if(k==='plaga'){
+    startPlague(tb.hx+rand(-10,10),tb.hy+rand(-10,10));startSwarm(p.x,p.y);if(n>6)startSwarm(p.x,p.y);
+  }else if(k==='meteoros')D.metQ+=3+Math.floor(n/3);
+}
+function spawnWave(){
+  const D=S.defend,tb=S.tribes[D.id];D.wave++;const n=D.wave;
+  const kinds=n<=WAVES.length?[WAVES[n-1].k]:[pick(WAVES).k,pick(WAVES).k].filter((k,i,a)=>a.indexOf(k)===i);
+  D.foeIds=[];D.raid=0;D.waveAt=S.tick;D.kind=kinds.join('+');D.title=kinds.map(k=>WAVES.find(w=>w.k===k).name).join(' + ');
+  for(const k of kinds)spawnThreat(k,tb,n);
+  alarm(tb,'oleada');hooks.event('wave',tb,{n,title:D.title});
+}
+function defendGameTick(){
+  const D=S.defend;if(D.over)return;
+  const tb=S.tribes[D.id];
+  if(!tb){D.over=true;D.best=Math.max(D.best,D.wave-1);hooks.event('defendLost',null,D);return;}
+  if(D.metQ>0&&S.tick%140===0){D.metQ--;startMeteor(tb.hx+rand(-70,70),tb.hy+rand(-70,70));}
+  if(!D.kind){if(S.tick>=D.next)spawnWave();return;}
+  if(S.tick%25)return;
+  // ¿quedan atacantes de esta oleada?
+  const ids=new Set(D.foeIds);let left=0;for(const c of S.creatures)if(ids.has(c.id))left++;
+  const rt=D.raid&&S.tribes[D.raid];if(rt)left+=rt.n;
+  let hazards=S.tornados.length+S.meteors.length+D.metQ;
+  for(let i=0;i<S.fires.length;i+=2){const f=S.fires[i];if(nearTribe(tb,f.x,f.y,40)){hazards++;break;}}
+  D.left=left;
+  if((left===0&&hazards===0&&S.tick-D.waveAt>250)||S.tick-D.waveAt>2600){
+    const n=D.wave;D.kind=null;D.next=S.tick+Math.max(900,1800-n*60);D.best=Math.max(D.best,n);
+    // recompensa: tu pueblo aprende de lo vivido, inventa y llegan refugiados
+    tb.know+=90*n;
+    for(const k of D.title?WAVES.filter(w=>D.title.includes(w.name)):[])learn(tb,k.inv,25);
+    for(let i=0;i<2+Math.floor(n/2);i++){const g=baseGenome(tb.type);g.intel=rand(.5,.65);const c=mkC(tb.type,i%2?'f':'m',tb.hx+rand(-10,10),tb.hy+rand(-10,10),g,3,18*g.size*g.size);
+      if(blocked(c.x,c.y)){c.x=tb.hx;c.y=tb.hy;}c.tribe=tb.id;c.age=400;S.creatures.push(c);}
+    hooks.event('waveWon',tb,{n,left});
+  }
 }
 
 /* ---- ⚡ Salto instantáneo: un modelo resumido de lo que pasaría en n ciclos ----
@@ -1055,7 +1256,7 @@ function instantJump(n,untilEra=false){
       const sm=ticks>=50000?10:5;for(let k=0;k<chunk/(50*sm);k++)socialTick(sm);
       // las catástrofes y los saltos espaciales se resuelven
       S.fires=[];for(const f of S.floods)f.t=f.dur;if(S.floods.length)disasterTick(5);
-      S.swarms=[];S.shots=[];for(const sh of S.ships)sh.t=sh.dur;if(S.ships.length)shipTick();for(const k of S.treks)k.t=k.dur;if(S.treks.length)trekTick();
+      S.swarms=[];S.shots=[];S.tornados=[];for(const sh of S.ships)sh.t=sh.dur;if(S.ships.length)shipTick();for(const k of S.treks)k.t=k.dur;if(S.treks.length)trekTick();
       for(const m of S.meteors)m.t=m.dur;if(S.meteors.length)meteorTick();
       // la vegetación vuelve a crecer
       for(let k=0;k<Math.min(chunk,400);k++){const x=rand(1,W-1),y=rand(1,H-1),i=tIdx(x,y);if(i>=0&&!wallT[i]&&S.plants.length<8000)S.plants.push({x,y,z:zone[i],dead:false});}
@@ -1247,7 +1448,7 @@ function linkTick(mult){
     const tb=TB[id];if(tb.lvl<6||tb.n<5||Math.random()>.05*mult||linksOf(tb)>=2)continue;
     const reg=regionOf(tb.hx,tb.hy);let best=null,bd=Infinity;
     for(const oid in TB){
-      const o=TB[oid];if(o===tb||o.lvl<6||tb.war===o.id||linked(tb,o)||linksOf(o)>=2)continue;
+      const o=TB[oid];if(o===tb||o.lvl<6||o.raider||tb.raider||tb.war===o.id||linked(tb,o)||linksOf(o)>=2)continue;
       const fam=o.parent===tb.id||tb.parent===o.id,same=regionOf(o.hx,o.hy)===reg,d=Math.hypot(o.hx-tb.hx,o.hy-tb.hy);
       if(same?(d<90||d>430):!(fam&&tb.lvl>=8&&o.lvl>=8))continue;
       const sc=same?d:2000;if(sc<bd){bd=sc;best=o;}
@@ -1289,7 +1490,7 @@ function addPlants(z,n){
 }
 function fresh(){
   S={tick:0,nextId:1,creatures:[],plants:[],tribes:{},tribeSeq:0,env:RECTS.map(()=>({...AMB})),food:1,mut:1,vis:1.6,cap:700,breaks:0,births:0,nextImm:35,ships:[],ruins:[],links:[],treks:[],
-    fires:[],floods:[],swarms:[],shots:[],plagueSeq:0,sickN:0,vStrain:1,evo:1,lakes:[],wild:[],meteors:[],daynight:true};
+    fires:[],floods:[],swarms:[],shots:[],tornados:[],defend:null,plagueSeq:0,sickN:0,vStrain:1,evo:1,lakes:[],wild:[],meteors:[],daynight:true};
   waterT.fill(0);scorch.fill(0);bfoot.fill(0);
   buildRecipients();computeZones();
   for(let z=1;z<=6;z++)addPlants(z,90);
@@ -1358,6 +1559,13 @@ hooks.event=(k,a,b)=>{
   if(k==='shieldHit'){if(fxB.booms.length<80){const v=shotPos(a,b.f,_s3c);fxB.booms.push({x:v.x,y:v.y,z:v.z,t:0,shield:true});}return;}
   if(k==='shieldMeteor'){const q=P3(a.x,a.y);fxB.booms.push({x:q.x,y:q.y+a.hy*K,z:q.z,t:0,big:true,shield:true});
     toast(`🛡️ ¡La cúpula-escudo de los ${b.name} ha detenido el meteorito!`);return;}
+  if(k==='invent'){toast(`💡 Los ${a.name} inventan: ${b.name} (${'★'.repeat(b.lv)}).`);return;}
+  if(k==='tornadoStop'){toast(`🌀 Los estabilizadores del clima de los ${a.name} deshacen el tornado.`);return;}
+  if(k==='meteorShot'){const q=P3(a.x,a.y);fxB.booms.push({x:q.x,y:q.y+a.hy*K,z:q.z,t:0,big:true});toast(`🚀 ¡Los cañones de los ${b.name} revientan el meteorito en el aire!`);return;}
+  if(k==='defendStart'){toast(`🎮 Defiende a los ${a.name}: en un rato llega la primera oleada. Ayúdales con el láser, la lluvia, los muros…`);return;}
+  if(k==='wave'){toast(`⚠️ Oleada ${b.n}: ${b.title}. ¡A defender la colonia!`);if(fxB.booms.length<80){const q=P3(a.hx,a.hy);fxB.booms.push({x:q.x,y:q.y+.05,z:q.z,t:0,spark:true});}return;}
+  if(k==='waveWon'){toast(`🏆 ¡Los ${a.name} resisten la oleada ${b.n}! Aprenden de lo vivido y llegan refugiados.`);return;}
+  if(k==='defendLost'){toast(`💀 Tu colonia ha caído en la oleada ${b.wave}. Récord: ${b.best} oleadas.`);try{localStorage.setItem('lab-defend-best',String(Math.max(b.best,+localStorage.getItem('lab-defend-best')||0)));}catch(e){}return;}
   if(k==='linkStart'){toast(`🌉 Los ${a.name} y los ${b.name} empiezan a tender un camino colgante entre sus ciudades.`);return;}
   if(k==='link'){toast(b.k==='tubo'?`🚇 Los ${a.name} y los ${b.b.name} ya están unidos por un tubo de cristal.`:`🌉 El puente colgante entre los ${a.name} y los ${b.b.name} está terminado.`);return;}
   if(k==='linkcut'){toast(`✂️ Guerra: los ${a.name} y los ${b.name} cortan el puente que los unía.`);return;}
@@ -2367,7 +2575,10 @@ function drawCivs(){
     }
     if(tb.war)drawArmy(tb,X,Y,Z);
     const lh=tb.kind==='tec'&&tb.lvl>=7?.62:hgt;
-    label(`${tb.war?'⚔ ':''}${KINDS[tb.kind].icon} ${tb.name} · ${eraName(tb)}`,tb.war?'#ffb3a8':'#ffffff',X,Y+lh,Z,.034,tb.war?'rgba(150,25,15,.85)':null);
+    const mine=S.defend&&!S.defend.over&&S.defend.id===tb.id;
+    label(`${mine?'⭐ ':''}${tb.war?'⚔ ':''}${KINDS[tb.kind].icon} ${tb.name} · ${eraName(tb)}`,mine?'#FFD34D':tb.war?'#ffb3a8':'#ffffff',X,Y+lh,Z,mine?.045:.034,mine?'rgba(90,60,0,.85)':tb.war?'rgba(150,25,15,.85)':null);
+    if(mine){const D=S.defend;
+      label(D.kind?`⚠️ Oleada ${D.wave}: ${D.title}${D.left?' · quedan '+D.left:''}`:`⏳ Oleada ${D.wave+1} en ${fmt(Math.max(0,D.next-S.tick))} ciclos`,D.kind?'#ff9a7a':'#ffe9a8',X,Y+lh+.07,Z,.04,'rgba(20,20,30,.8)');}
   }
 }
 /* ⛵ Barcos de los pueblos marineros navegando por su lago: barcas, veleros y, al final, barcos de vapor */
@@ -2631,6 +2842,16 @@ function drawDisasters(dt){
     inst(P.glow,x,y,z,0,r,r,r,sh.lvl>=9?C.missile:sh.lvl>=7?C.shell:C.ruin);
     if(sh.lvl>=7)inst(P.halo,x,y,z,0,r*2.4,r*2.4,r*2.4,sh.lvl>=9?C.flame:scaleRGB(C.boom,.5));
   }
+  // 🌪️ tornados: embudo de nubes girando, escombros alrededor y polvo en la base
+  for(const tw of S.tornados){
+    const q=P3(tw.x,tw.y),X=q.x,Y=q.y,Z=q.z,R=tw.r*K,g=Math.min(1,tw.t/40)*clamp((tw.life-tw.t)/60,0,1);
+    for(let k=0;k<9;k++){const f=k/8,h=f*.5*g,rr=R*(.16+f)*g+.002,a=frameN*.25+k*.7,wob=Math.sin(frameN*.05+k)*R*.12;
+      inst(B.smoke,X+Math.cos(a)*rr*.15+wob,Y+h,Z+Math.sin(a)*rr*.15,0,rr,.03*g+.008,rr,scaleRGB(C.cloud,.75+.25*f));
+      if(k%2)inst(P.ring,X+wob,Y+h,Z,a,rr*1.05,.06,rr*1.05,scaleRGB(C.cloud,.85));}
+    for(let k=0;k<10;k++){const a=frameN*.15*(1+k*.05)+k,d=R*(.3+((k*37)%10)/14)*g,yy=Y+((frameN*.01+k*.1)%1)*.45*g;
+      inst(P.box,X+Math.cos(a)*d,yy,Z+Math.sin(a)*d,a,.006,.004,.006,k%2?C.debris:C.trunk);}
+    inst(P.halo,X,Y+.01,Z,0,R*1.3*g,.03,R*1.3*g,scaleRGB(C.debris,.5));
+  }
   // ☄️ meteoritos cayendo
   for(const m of S.meteors){
     const f=m.t/m.dur,q=P3(m.x,m.y),h=(1-f)*METEOR_H*K,off=(1-f)*1.2;
@@ -2697,7 +2918,7 @@ function render3D(dt){
     for(const r of REGIONS){
       const n=ui.reg[r.id][0]+ui.reg[r.id][1]+ui.reg[r.id][2];
       const p=P3(r.x0+r.w/2,r===MAIN?r.y0+r.h-14:r.y0+r.h/2);
-      if(r===MAIN){if(n)label(`⚠ ${n} organismos sueltos por la mesa`,'#ffd34d',p.x,.2,p.z,.04);}
+      if(r===MAIN){if(n&&!(S.defend&&!S.defend.over))label(`⚠ ${n} organismos sueltos por la mesa`,'#ffd34d',p.x,.2,p.z,.04);}
       else label(`${r.name}${n?' · '+n+' habitantes':''}`,n?'#ffd34d':'#c9d2d8',p.x,p.y+.3,p.z,.06);
     }
   }
@@ -2738,6 +2959,7 @@ function render3D(dt){
   }
   for(const b of emButtons)b.userData.cap.position.y=b.userData.pressed>0?.03:.04;
 
+  if(infoTag){if(performance.now()>infoTag.until||!S)infoTag=null;else{const q=P3(infoTag.x,infoTag.y);label(infoTag.t,'#9ae6ff',q.x,q.y+.1,q.z,.034,'rgba(10,30,40,.85)');}}
   if(jump)label(jump.untilEra?`⏭ Buscando la próxima era… ${fmt(jump.done)} ciclos`:`⏩ Saltando en el tiempo… ${Math.round(jump.done/jump.n*100)} %`,'#FFD34D',0,.45,0,.08);
   else if(speed===0)label('⏸ Pausa','#ffffff',0,.45,0,.08);
 
@@ -2763,7 +2985,8 @@ const TABS=[['herr','🧰 Útiles'],['viaje','🧭 Viajar'],['recip','🧪 Recip
 const TOOLS=[['look','👁️ Observar'],['grab','🤏 Pinzas'],['add','➕ Añadir'],['smash','🔨 Demoler'],
   ['lake','💧 Lago'],['trees','🌳 Bosque'],['rain','🌧️ Lluvia'],['fire','🔥 Fuego'],
   ['vax','💉 Vacuna'],['virus','🦠 Virus V'],['plague','☣️ Peste'],['locust','🦗 Langostas'],
-  ['meteor','☄️ Meteorito'],['wall','🧱 Pared'],['rect','⬜ Recinto'],['erase','💥 Romper muros']];
+  ['meteor','☄️ Meteorito'],['tornado','🌪️ Tornado'],['laser','🔴 Láser'],['wall','🧱 Pared'],
+  ['rect','⬜ Recinto'],['erase','💥 Romper muros']];
 const TOOL_HELP={
   lake:'Pulsa para crear un lago. Pulsa otra vez al lado y se suma superficie: así haces lagos de la forma que quieras. En el agua solo nadan las células, los peces y los pueblos marineros ⚓, que construyen muelles, palafitos, faros y barcos.',
   trees:'Mantén pulsado y arrastra para plantar un bosque. Hay 10 especies (pino, abeto, roble, abedul, palmera, sauce, cerezo, arce, ciprés y baobab) y cada sitio elige las que le van: palmeras con calor, pinos con frío, sauces junto al agua. Los bosques dan comida… y arden.',
@@ -2773,7 +2996,9 @@ const TOOL_HELP={
   fire:'Pulsa para prender fuego. Se propaga por las algas, los árboles y los edificios. Desde la Ciudad-estado los pueblos apagan fuegos cerca de casa, y con un parque de bomberos mucho mejor.',
   plague:'Pulsa para soltar una peste: los que estén cerca enferman (color mostaza) y contagian a quien tocan. Desde el Reino los pueblos investigan la cura (los tecnológicos, más rápido) y construyen un hospital.',
   locust:'Pulsa para soltar un enjambre de langostas que arrasa algas y cultivos. Los pueblos avanzados lo combaten con pesticidas o, los ecologistas, con aves y trampas.',
-  look:'Apunta a un organismo y pulsa para seguirlo: sus datos salen en la pestaña Datos y un faro de luz lo marca. Pulsar dentro de un recipiente lo selecciona.',
+  look:'Pulsa sobre cualquier cosa y te dice qué es: un ser (y lo sigues: sus datos salen en Datos), un edificio, una muralla, un árbol, un lago, un muro, el fuego, unas ruinas o el suelo de un recipiente.',
+  laser:'Mantén pulsado y apunta: lo que tocas se desintegra. Fino: un solo objetivo (un ser, un edificio, un árbol o un muro). Ancho: todo lo que hay en un círculo. Ojo: los pueblos aprenden a defenderse (vigías que avisan, espejos que reflejan, blindaje en su cúpula).',
+  tornado:'Pulsa para soltar un tornado: va dando tumbos, arrastra a los seres, arranca árboles, muros y cristal y destroza edificios. Los pueblos que lo sufren inventan refugios, anclajes y, al final, estabilizadores del clima que lo deshacen.',
   grab:'Coge un organismo y suéltalo donde quieras: otro recipiente, la mesa, el suelo o las encimeras. En VR también puedes usar el grip del mando apuntando a un organismo, con cualquier herramienta.',
   add:'Pulsa dentro de un recipiente o en cualquier tierra para soltar organismos.',
   vax:'Pulsa sobre un organismo para inyectarle la vacuna mutágena: gigantismo, superfuerza (rompe paredes), autorreproducción o una mutación sorpresa. Sus crías pueden heredarla.',
@@ -2785,7 +3010,7 @@ const TOOL_HELP={
 const VR_HELP=[
   '🎯 Gatillo: usar la herramienta y pulsar botones',
   '✊ Grip: sobre el panel lo mueves · sobre un ser, pinzas',
-  '🕹️ Izquierdo: caminar · Derecho ← →: girar 45° · ↑ arco y suelta: teletransporte',
+  '🕹️ Izquierdo: adelante, atrás y a los lados · Derecho ↑ ↓: subir al techo o bajar al suelo · ← →: girar 45°',
   '👊 Golpea edificios o muros con el mando para derribarlos',
   '✊✊ Grip con las dos manos: encoger o agrandar el laboratorio',
   '🅰️ A/X: panel · 🅱️ B/Y: pausa · pulsar stick: volver al inicio',
@@ -2856,7 +3081,7 @@ function drawPanel(){
   panelTex.needsUpdate=true;
 }
 function tabHerr(y){
-  const TC={virus:'#5D7F12',vax:'#a8861a',plague:'#7d7420',locust:'#5a5a2a',fire:'#b8401a',rain:'#2a6aa8',smash:'#8a4a2a',lake:'#1d6aa0',trees:'#2f7d3f',meteor:'#7a3a8a'};
+  const TC={laser:'#c81e1e',tornado:'#5a6a7a',virus:'#5D7F12',vax:'#a8861a',plague:'#7d7420',locust:'#5a5a2a',fire:'#b8401a',rain:'#2a6aa8',smash:'#8a4a2a',lake:'#1d6aa0',trees:'#2f7d3f',meteor:'#7a3a8a'};
   TOOLS.forEach(([m,l],i)=>button(32+(i%4)*242,y+Math.floor(i/4)*72,232,62,l,()=>setMode(m),{on:mode===m,id:'t'+m,size:24,
     onColor:TC[m]||UI.ink,onText:TC[m]?'#ffffff':UI.bg}));
   y+=Math.ceil(TOOLS.length/4)*72+14;
@@ -2865,6 +3090,9 @@ function tabHerr(y){
     sec('Sexo',y+100);seg(y+114,[['f','Hembra'],['m','Macho'],['r','Al azar']],addOpt.sex,v=>{addOpt.sex=v;},'sx');
     sec('Cuántos por toque',y+200);seg(y+214,[[1,'1'],[2,'2'],[10,'10'],[25,'25']],addOpt.qty,v=>{addOpt.qty=v;},'q');
     y+=300;
+  }else if(mode==='laser'){
+    sec('Haz',y);seg(y+14,[[false,'🎯 Fino: un objetivo'],[true,'💥 Ancho: una zona']],laserOpt.wide,v=>{laserOpt.wide=v;},'lz');
+    y+=100;
   }else if(mode==='wall'||mode==='erase'){
     sec('Grosor',y);seg(y+14,[[1,'Fino'],[2,'Grueso']],brush.size,v=>{brush.size=v;},'br');
     y+=100;
@@ -2873,7 +3101,7 @@ function tabHerr(y){
   const now=[];
   if(S.fires.length)now.push(`🔥 ${S.fires.length} focos`);if(S.floods.length)now.push(`🌧️ ${S.floods.length} inundaciones`);
   if(S.sickN)now.push(`☣️ ${S.sickN} enfermos`);if(S.swarms.length)now.push(`🦗 ${S.swarms.length} enjambres`);
-  if(S.shots.length)now.push(`💣 ${S.shots.length} proyectiles`);if(ui.anyWar)now.push('⚔️ hay guerra');
+  if(S.shots.length)now.push(`💣 ${S.shots.length} proyectiles`);if(S.tornados.length)now.push(`🌪️ ${S.tornados.length} tornado${S.tornados.length>1?'s':''}`);if(ui.anyWar)now.push('⚔️ hay guerra');
   if(now.length){y+=10;tx('Ahora mismo: '+now.join(' · '),32,y+24,23,'#ffb38a',true,'left',PANEL_W-64);y+=30;}
   y+=24;sec('Evolución de la vida',y);y+=8;
   y=wrap(STAGES.map((n,i)=>`${n} ${ui.stages[i]}`).join(' → '),32,y,PANEL_W-64,23,UI.ink,31,2);
@@ -2891,11 +3119,11 @@ function tabViaje(y){
   y+=86;
   sec('Movimiento',y);y+=12;
   const w=(PANEL_W-74)/2;
-  button(32,y,w,62,vr.fly?'✈️ Modo vuelo: SÍ':'✈️ Modo vuelo: no',()=>{vr.fly=!vr.fly;toast(vr.fly?'✈️ Modo vuelo: mira hacia donde quieras ir (también arriba o abajo) y empuja el stick izquierdo.':'🚶 Modo a pie.');},{id:'fly',on:!!vr.fly,onColor:UI.focus});
+  button(32,y,w,62,vr.fast?'🐇 Movimiento: rápido':'🐢 Movimiento: tranquilo',()=>{vr.fast=!vr.fast;toast(vr.fast?'🐇 Te mueves el doble de rápido.':'🐢 Movimiento tranquilo.');},{id:'fly',on:!!vr.fast,onColor:UI.focus});
   button(42+w,y,w,62,'📍 Traer el panel aquí',()=>{placePanel();vr.placed=true;},{id:'bring'});
   y+=76;
   stepper(y,'Tu altura',`${rig.position.y>=0?'+':''}${Math.round(rig.position.y*100)} cm`,()=>changeHeight(-.25),()=>changeHeight(.25));y+=80;
-  wrap('Con el modo vuelo activado, el stick izquierdo te lleva hacia donde miras: mira al techo para subir, al suelo para bajar o al panel para acercarte. Sin modo vuelo caminas por el suelo. Con el stick derecho giras (← →) o te teletransportas con el arco (↑).',
+  wrap('Stick izquierdo: adelante, atrás, izquierda y derecha (según hacia dónde miras). Stick derecho: hacia arriba subes hasta el techo y hacia abajo bajas hasta rozar el suelo y ver a los seres de cerca; de lado giras 45°. Pulsar un stick te devuelve al inicio.',
        32,y,PANEL_W-64,22,UI.muted,29,5);
 }
 function tabRecip(y){
@@ -2923,12 +3151,27 @@ function tabRecip(y){
   tx('También hay un botón rojo de emergencia en la esquina de cada recipiente.',32,y+122,22,UI.muted,false,'left',PANEL_W-64);
 }
 function tabCiv(y){
-  const tl=Object.values(S.tribes).sort((a,b)=>b.lvl-a.lvl||b.n-a.n);
+  const D=S.defend,playing=D&&!D.over&&S.tribes[D.id];
+  const tl=Object.values(S.tribes).sort((a,b)=>(playing?(b.id===D.id)-(a.id===D.id):0)||b.lvl-a.lvl||b.n-a.n);
+  // 🎮 Defiende tu colonia
+  {const w=(PANEL_W-74)/2;let best=0;try{best=+localStorage.getItem('lab-defend-best')||0;}catch(e){}best=Math.max(best,D?D.best:0);
+   if(playing){const tb=S.tribes[D.id];
+     tx(`🎮 Defiendes a los ${tb.name} · ${D.kind?`⚠️ oleada ${D.wave}: ${D.title}`:`superadas ${D.wave} · la próxima en ${fmt(Math.max(0,D.next-S.tick))} ciclos`}`,32,y+30,23,'#FFD34D',true,'left',PANEL_W-64);
+     button(32,y+44,w,54,'⏭ Lanzar ya la oleada',()=>{if(!D.kind){D.next=S.tick;}},{id:'dnow',size:22,disabled:!!D.kind});
+     button(42+w,y+44,w,54,'🏳️ Dejar de defender',()=>{S.defend=null;toast('Has dejado el modo defensa. El laboratorio sigue a su aire.');},{id:'dstop',size:22});
+   }else{
+     const armed=vr.colonyArmed>performance.now();
+     button(32,y+6,PANEL_W-64,62,armed?'⚠️ Pulsa otra vez: se reinicia el laboratorio':'🎮 Nueva partida: Defiende tu colonia',()=>{
+       if(vr.colonyArmed>performance.now()){vr.colonyArmed=0;newColonyGame();sel=null;bgDirty=wallsDirty=true;setSpeed(.5);focusOn(S.tribes[S.defend.id].hx,S.tribes[S.defend.id].hy);updateUI();}
+       else vr.colonyArmed=performance.now()+3000;},{id:'dnew',fill:armed?'#5a1a10':'#2a2310',color:'#a8861a',size:25});
+     tx(`O pulsa ⭐ en un pueblo para defenderlo.${D&&D.over?` Última partida: ${D.wave-1} oleadas.`:''}${best?` Récord: ${best}.`:''}`,32,y+96,21,UI.muted,false,'left',PANEL_W-64);
+   }
+   y+=116;}
   if(!tl.length){
     wrap('Aún no hay ninguno. Los pueblos nacen cuando varios organismos llegan al 45 % de inteligencia. La inteligencia sube sola con las generaciones; la radiación y la vacuna pueden acelerarlo. Prueba a saltar 10.000 ciclos.',32,y,PANEL_W-64,25,UI.muted,34,6);
     y+=220;
   }
-  for(const tb of tl.slice(0,6)){
+  for(const tb of tl.slice(0,5)){
     const en=tb.war&&S.tribes[tb.war],pa=tb.parent&&S.tribes[tb.parent];
     button(32,y,PANEL_W-64,98,'',()=>focusOn(tb.hx,tb.hy),{id:'civ'+tb.id,color:en?'#8a2a1a':UI.line});
     pc.fillStyle=tb.col;pc.beginPath();pc.arc(62,y+32,12,0,6.283);pc.fill();
@@ -2936,17 +3179,19 @@ function tabCiv(y){
     tx(`${tb.n} hab.`,PANEL_W-56,y+42,23,UI.muted,false,'right');
     const bits=[tb.type==='p'?'presas':'depredadores',regionOf(tb.hx,tb.hy).name.toLowerCase()];
     if(tb.buildings.length)bits.push(`${tb.buildings.length} edificios`);if(tb.trees.length)bits.push(`${tb.trees.length} árboles`);
-    {const sh=shieldOf(tb);if(threatened(tb)&&!en)bits.push('⚠️ en alerta');if(tb.wr)bits.push('🧱 amurallada');if(sh)bits.push(`🛡️ escudo ${Math.round(sh.e??100)} %`);if(tb.sc)bits.push(`🧭 ${tb.sc} exploradores`);}
+    {const ni=tb.inv?Object.values(tb.inv).reduce((a,b)=>a+b,0):0;if(ni)bits.push(`💡 ${ni} inventos`);
+     const sh=shieldOf(tb);if(threatened(tb)&&!en)bits.push('⚠️ en alerta');if(tb.wr)bits.push('🧱 amurallada');if(sh)bits.push(`🛡️ escudo ${Math.round(sh.e??100)} %`);if(tb.sc)bits.push(`🧭 ${tb.sc} exploradores`);}
     if(tb.cures.length)bits.push(`${tb.cures.length} curas`);if(tb.wins)bits.push(`${tb.wins} victorias`);if(pa)bits.push(`colonia de los ${pa.name}`);
-    tx(en?`⚔️ EN GUERRA con los ${en.name}`:bits.join(', '),88,y+80,21,en?'#ff8f7a':UI.muted,false,'left',PANEL_W-88-300);
-    // órdenes: guerra, paz, armas
+    tx(en?`⚔️ EN GUERRA con los ${en.name}`:bits.join(', '),88,y+80,21,en?'#ff8f7a':UI.muted,false,'left',PANEL_W-88-400);
+    // órdenes: defender, guerra, paz, armas
     const bx=PANEL_W-48-3*96;
+    button(bx-96,y+52,90,40,'⭐',()=>{if(startDefend(tb.id)){setSpeed(Math.max(speed,.5));focusOn(tb.hx,tb.hy);}},{id:'def'+tb.id,size:22,on:!!(playing&&D.id===tb.id),onColor:'#a8861a'});
     button(bx,y+52,90,40,'⚔️',()=>{const e=declareWar(tb);toast(e?`⚔️ Los ${tb.name} declaran la guerra a los ${e.name}.`:'No hay ningún otro pueblo con quien luchar.');updateUI();},{id:'war'+tb.id,size:22,color:'#a8261a'});
     button(bx+96,y+52,90,40,'🕊️',()=>{const e=makePeace(tb);toast(e?`🕊️ Los ${tb.name} y los ${e.name} firman la paz.`:`Los ${tb.name} no están en guerra.`);updateUI();},{id:'peace'+tb.id,size:22,disabled:!en});
     button(bx+192,y+52,90,40,'🛡️+',()=>{const a=armTribe(tb);toast(`🛡️ Los ${tb.name} reciben mejores armas (nivel ${a} de 3).`);},{id:'arm'+tb.id,size:22,disabled:(tb.arms||0)>=3});
     y+=106;
   }
-  if(tl.length)tx('Pulsa un pueblo para ir a verlo · ⚔️ guerra con el vecino más cercano · 🕊️ paz · 🛡️ armas',32,y+26,21,UI.muted,false,'left',PANEL_W-64);
+  if(tl.length)tx('Pulsa un pueblo para ir a verlo · ⭐ defenderlo · ⚔️ guerra con el vecino · 🕊️ paz · 🛡️ armas',32,y+26,21,UI.muted,false,'left',PANEL_W-64);
   y+=62;
   sec('Las eras',y);
   y+=4;
@@ -3075,6 +3320,90 @@ function computeHit(ptr){
 function buzz(ptr,v,ms){try{ptr.source?.gamepad?.hapticActuators?.[0]?.pulse(v,ms);}catch(e){}}
 const tapR=ptr=>ptr.xr?12:9;
 
+
+/* 👁️ Observar: te dice qué es lo que has tocado */
+const BNAME={choza:'Choza',casa:'Casa',granja:'Granja',molino:'Molino',iglesia:'Templo',torre:'Torre del pueblo',fabrica:'Fábrica',rascacielos:'Rascacielos',
+  aerogenerador:'Aerogenerador',panel:'Paneles solares',bunker:'Búnker',cohete:'Plataforma de cohetes',biocupula:'Biocúpula',pozo:'Pozo',mercado:'Mercado',
+  cuartel:'Cuartel',bomberos:'Parque de bomberos',hospital:'Hospital',universidad:'Universidad',parque:'Parque con fuente',canon:'Cañón',antena:'Antena',
+  bloque:'Bloque de pisos',invernadero:'Invernadero',muelle:'Muelle',palafito:'Palafito',faro:'Faro',astillero:'Astillero',muralla:'Muralla',atalaya:'Atalaya',
+  fortaleza:'Fortaleza en la colina',escudo:'Cúpula-escudo',datos:'Torre de datos',esfera:'Esfera de cristal',colmena:'Colmena de luz'};
+const BDESC={choza:'vivienda de las primeras aldeas',casa:'vivienda familiar',granja:'da comida a la ciudad',molino:'muele el grano',iglesia:'el templo del pueblo',
+  torre:'el centro de la ciudad',fabrica:'produce… y contamina',rascacielos:'oficinas y viviendas en altura',aerogenerador:'energía del viento',panel:'energía del sol',
+  bunker:'refugio militar',cohete:'desde aquí despegan hacia otras tierras',biocupula:'un bosque bajo cristal',pozo:'agua para todos',mercado:'puestos de comida',
+  cuartel:'entrena a los guerreros',bomberos:'apagan los incendios mucho antes',hospital:'cura la peste',universidad:'el saber avanza más rápido',parque:'para pasear',
+  canon:'artillería contra el enemigo',antena:'comunicaciones',bloque:'muchas familias en poco sitio',invernadero:'cultivos todo el año',muelle:'para los barcos',
+  palafito:'casa sobre pilotes',faro:'guía a los barcos de noche',astillero:'aquí se construyen barcos',muralla:'para parte de los proyectiles y da ventaja a los defensores',
+  atalaya:'vigila y avisa de los incendios',fortaleza:'su refugio en lo alto de la colina',escudo:'frena proyectiles y meteoritos',datos:'hogar de la vida sintética',
+  esfera:'hábitat flotante de la vida sintética',colmena:'celdas de luz donde vive la vida sintética'};
+function describeC(c){
+  const st=stageOf(c),tb=civOf(c),f=c.sex==='f';
+  const role=c.zombie?'zombi':c.inc>0?'infectado (incubando)':c.warrior?(f?'guerrera':'guerrero'):c.scout>0?(f?'exploradora':'explorador'):c.herd?'ganado':c.mig?'colono en camino':'';
+  const muts=Object.keys(c.mut).map(k=>MUTS[k]);
+  const d=[`${f?'hembra':'macho'}`,`edad ${fmt(c.age)}`,`energía ${Math.round(clamp(c.energy/(45*sz(c)**2),0,1)*100)} %`,`generación ${c.gen}`];
+  if(c.immune)d.push('inmune al virus');if(c.sick)d.push('enfermo de peste');if(muts.length)d.push('mutaciones: '+muts.join(', '));
+  return{t:`${STAGES[st]} · ${c.type==='p'?'presa':'depredador'}${role?' · '+role:''}${tb?` · de los ${tb.name} (${eraName(tb)})`:''}`,d:d.join(' · '),x:c.x,y:c.y};
+}
+function describeAt(p,r){
+  const c=nearest(p,r);
+  if(c){sel=c;return describeC(c);}
+  sel=null;
+  const hit=findBuildingAt(p.x,p.y,2);
+  if(hit){const b=hit.b,ex=[BDESC[b.k]||''];if(TOUGH[b.k])ex.push(`resistencia ${Math.round(100*clamp((b.hp??TOUGH[b.k])/TOUGH[b.k],0,1))} %`);
+    if(b.k==='fortaleza'&&(b.prog??1)<1)ex.push(`excavando la colina (${Math.round(b.prog*100)} %)`);if(b.mt&&S.tick-b.mt<MORPH_T)ex.push('transformándose');
+    return{t:`${BNAME[b.k]||b.k} de los ${hit.tb.name}`,d:ex.join(' · '),x:b.x,y:b.y};}
+  for(const id in S.tribes){const tb=S.tribes[id],w=wallOf(tb);
+    if(w&&Math.abs(Math.hypot(p.x-w.x,p.y-w.y)-w.r)<5)return{t:`Muralla de los ${tb.name}`,d:`${BDESC.muralla} · resistencia ${Math.round(100*clamp(w.hp/TOUGH.muralla,0,1))} %${tb.war?' · puertas cerradas por la guerra':''}`,x:p.x,y:p.y};}
+  for(const tw of S.tornados)if((tw.x-p.x)**2+(tw.y-p.y)**2<tw.r*tw.r)return{t:'🌪️ Tornado',d:'arrastra a los seres y destroza lo que toca',x:tw.x,y:tw.y};
+  for(const f of S.fires)if((f.x-p.x)**2+(f.y-p.y)**2<64)return{t:'🔥 Fuego',d:'se propaga por algas, árboles y edificios; la lluvia lo apaga',x:f.x,y:f.y};
+  let tr=null,td=36,own=null;
+  for(const t of S.wild){const d=(t.x-p.x)**2+(t.y-p.y)**2;if(d<td){td=d;tr=t;own=null;}}
+  for(const id in S.tribes)for(const t of S.tribes[id].trees){const d=(t.x-p.x)**2+(t.y-p.y)**2;if(d<td){td=d;tr=t;own=S.tribes[id];}}
+  if(tr){const sp=tr.sp||'árbol';return{t:`🌳 ${sp[0].toUpperCase()+sp.slice(1)}`,d:own?`plantado por los ${own.name}`:'bosque silvestre: da comida alrededor (y arde)',x:tr.x,y:tr.y};}
+  for(const r of S.ruins)if((r.x-p.x)**2+(r.y-p.y)**2<100)return{t:`🏚️ Ruinas: ${(BNAME[r.k]||r.k).toLowerCase()}`,d:'lo que queda de un edificio destruido',x:r.x,y:r.y};
+  const i=tIdx(p.x,p.y);
+  if(i>=0&&wallT[i]&&wallT[i]!==VOID){const tp=wallT[i],hp=Math.round(100*clamp(wallHP[i]/WALL_HP[tp],0,1));
+    return{t:tp===1?`🧪 Pared de cristal del recipiente`:tp===2?'🧱 Muro de piedra':'🪵 Empalizada de madera de un pueblo',d:`resistencia ${hp} %`,x:p.x,y:p.y};}
+  if(i>=0&&waterT[i])return{t:'💧 Lago',d:'aquí solo nadan las células, los peces y los pueblos marineros',x:p.x,y:p.y};
+  for(const m of S.ruinsCraters||[])if((m.x-p.x)**2+(m.y-p.y)**2<484)return{t:'☄️ Cráter de meteorito',d:'aquí cayó un meteorito',x:m.x,y:m.y};
+  for(const q of S.plants)if(!q.dead&&(q.x-p.x)**2+(q.y-p.y)**2<9)return{t:'🌿 Alga',d:'comida de las presas',x:q.x,y:q.y};
+  const z=zoneAt(p.x,p.y);
+  if(z){const E=S.env[z-1],n=S.creatures.filter(o=>o.z===z).length;return{t:`🧪 Recipiente R${z}`,d:`${Math.round(E.temp)} °C · O₂ ${Math.round(E.o2)} %${E.rad?' · radiación '+E.rad:''} · ${n} organismos`,x:p.x,y:p.y};}
+  let town=null;for(const id in S.tribes){const tb=S.tribes[id];if(nearTribe(tb,p.x,p.y))town=tb;}
+  return{t:`${regionOf(p.x,p.y).name}`,d:town?`territorio de los ${town.name}`:(i>=0&&scorch[i]>S.tick?'tierra quemada':'suelo libre'),x:p.x,y:p.y};
+}
+let infoTag=null;
+function showInfo(o){if(!o)return;toast(`${o.t} — ${o.d}`);infoTag={...o,until:performance.now()+5000};}
+
+/* 🔴 Láser: un haz rojo desde tu mano (o desde la cámara) hasta lo que apuntas */
+const laserOpt={wide:false};
+const laserMat=basic({color:'#ff2020',transparent:true,opacity:.85,blending:THREE.AdditiveBlending,depthWrite:false});
+const laserBeam=new THREE.Mesh(new THREE.CylinderGeometry(1,1,1,8,1,true).translate(0,.5,0),laserMat);
+const laserDot=new THREE.Mesh(new THREE.SphereGeometry(1,12,8),basic({color:'#ffd0c0',transparent:true,opacity:.9,blending:THREE.AdditiveBlending,depthWrite:false}));
+laserBeam.visible=laserDot.visible=false;laserBeam.frustumCulled=laserDot.frustumCulled=false;scene.add(laserBeam,laserDot);
+const _lo=new THREE.Vector3(),_ld=new THREE.Vector3(),_loff=new THREE.Vector3();
+let laserMsgAt=0;
+function laserFire(ptr){
+  const h=ptr.hit;if(!h||h.kind!=='table'||busy)return;
+  const r=laserAt(h.sim.x,h.sim.y,laserOpt.wide),q=P3(h.sim.x,h.sim.y);
+  if(fxB.booms.length<90)fxB.booms.push({x:q.x+rand(-.004,.004),y:q.y+.004,z:q.z+rand(-.004,.004),t:.25,spark:!r.blocked,shield:!!r.blocked});
+  if(r.n){buzz(ptr,.7,40);if(sel&&sel.dead)sel=null;}
+  if((r.blocked||r.dodge)&&performance.now()-laserMsgAt>5000){laserMsgAt=performance.now();
+    toast(r.blocked?'🪞 ¡Lo han reflejado! Ese pueblo ha aprendido a defenderse del láser.':'🏃 ¡Lo han esquivado! Sus vigías avisan cuando apuntas.');}
+}
+function laserUpdate(){
+  let ptr=null;for(const p of pointers)if(p.drag&&p.drag.laser&&p.active&&p.xr===renderer.xr.isPresenting)ptr=p;
+  laserBeam.visible=laserDot.visible=false;
+  if(!ptr||mode!=='laser'||!ptr.hit||ptr.hit.kind!=='table')return;
+  if(ptr.xr)ptr.ctrl.getWorldPosition(_lo);
+  else _lo.copy(camera.position).add(_loff.set(.1,-.12,-.2).applyQuaternion(camera.quaternion));
+  _ld.copy(ptr.hit.point).sub(_lo);const L=_ld.length();_ld.normalize();
+  const w=(laserOpt.wide?.01:.0035)*(1+.35*Math.sin(frameN*.9));
+  laserBeam.position.copy(_lo);laserBeam.quaternion.setFromUnitVectors(_UP,_ld);laserBeam.scale.set(w,L,w);
+  laserDot.position.copy(ptr.hit.point);laserDot.scale.setScalar((laserOpt.wide?14*K*world.scale.x:.012)*(1+.2*Math.sin(frameN*.7)));
+  laserBeam.visible=laserDot.visible=true;
+  if(frameN%(laserOpt.wide?4:6)===0)laserFire(ptr);
+}
+
 /* Demoler: arrasa todo lo construido (y los árboles) en un radio alrededor del punto */
 const SMASH_R=14;
 function smashAt(p){
@@ -3120,7 +3449,9 @@ function pointerDown(ptr){
   if(h.kind==='emerg'){emergency(h.i);buzz(ptr,.8,120);emButtons[h.i].userData.pressed=12;return;}
   if(busy)return;
   const p=h.sim;
-  if(mode==='look'){zoneTapped(p);sel=nearest(p,tapR(ptr));vr.dirty=true;if(sel)buzz(ptr,.3,30);return;}
+  if(mode==='look'){zoneTapped(p);showInfo(describeAt(p,tapR(ptr)));vr.dirty=true;buzz(ptr,.3,30);return;}
+  if(mode==='laser'){ptr.drag={laser:true};laserFire(ptr);return;}
+  if(mode==='tornado'){startTornado(p.x,p.y);buzz(ptr,.6,80);toast('🌪️ ¡Tornado! Arrastra todo lo que encuentra.');return;}
   if(mode==='grab'){grabCreature(ptr,p);return;}
   if(mode==='smash'){ptr.drag={smash:true,last:p};if(smashAt(p))buzz(ptr,.9,90);return;}
   if(mode==='lake'){if(addLake(p.x,p.y,26)){buzz(ptr,.4,60);if(S.lakes.length===1)toast('💧 Lago creado. Pulsa al lado para hacerlo más grande.');}else toast('Ahí no se puede poner agua.');return;}
@@ -3190,7 +3521,7 @@ function mouseRay(e){
   ndc.set(((e.clientX-r.left)/r.width)*2-1,-((e.clientY-r.top)/r.height)*2+1);
   raycaster.setFromCamera(ndc,camera);mousePtr.ray.copy(raycaster.ray);mousePtr.active=true;computeHit(mousePtr);
 }
-const TAP_TOOLS=new Set(['look','add','vax','virus','fire','rain','plague','locust','lake','meteor']);
+const TAP_TOOLS=new Set(['look','add','vax','virus','fire','rain','plague','locust','lake','meteor','tornado']);
 const tapTool=()=>TAP_TOOLS.has(mode);
 canvas.addEventListener('pointerdown',e=>{
   if(e.button!==0||renderer.xr.isPresenting)return;
@@ -3271,7 +3602,7 @@ function updateXRPointer(ptr,dt){
   ptr.laser.visible=!ptr.aiming;                 // mientras apuntas el teletransporte se ve el arco, no el láser
   ptr.cursor.visible=!!ptr.hit&&!ptr.aiming;if(ptr.hit)ptr.cursor.position.copy(ptr.hit.point);
   const open=ptr.down||ptr.carry?.015:.12;ptr.arms[0].rotation.y=open;ptr.arms[1].rotation.y=-open;
-  ptr.laser.material.color.set(ptr.tpAim?'#5ef0c8':panelDrag.ptr===ptr?'#ffffff':ptr.carry?'#fbd38d':mode==='virus'?'#B5F03C':mode==='vax'?'#FFD34D':mode==='grab'?'#fbd38d':mode==='erase'||mode==='smash'?'#e0603f':'#9ae6ff');
+  ptr.laser.material.color.set(ptr.tpAim?'#5ef0c8':panelDrag.ptr===ptr?'#ffffff':ptr.carry?'#fbd38d':mode==='virus'?'#B5F03C':mode==='vax'?'#FFD34D':mode==='grab'?'#fbd38d':mode==='erase'||mode==='smash'?'#e0603f':mode==='laser'?'#ff2a2a':'#9ae6ff');
   if(ptr.tpAim){
     const {dest,look}=ptr.tpAim;tpMark.visible=true;tpMark.position.copy(dest);
     tpMark.rotation.y=Math.atan2(-(look.x-dest.x),-(look.z-dest.z));
@@ -3382,29 +3713,22 @@ function doTeleport(tp){
 function gamepadUpdate(ptr,dt){
   const gp=ptr.source&&ptr.source.gamepad;if(!gp)return;
   const dz=v=>Math.abs(v)<.18?0:v,x=dz(gp.axes[2]||0),y=dz(gp.axes[3]||0);
+  const spd=vr.fast?2.6:1.3,ease=Math.min(1,dt*8);
   if(ptr.source.handedness==='left'){
-    // caminar: hacia donde miras (adelante/atrás y de lado), con arranque suave.
-    // En modo vuelo, "adelante" incluye subir o bajar según hacia dónde mires.
-    const {yaw}=headPose();let tx=(-Math.sin(yaw)*-y+Math.cos(yaw)*x)*1.5,tz=(-Math.cos(yaw)*-y-Math.sin(yaw)*x)*1.5,ty=0;
-    if(vr.fly){
-      const cam=renderer.xr.getCamera();cam.getWorldDirection(_hd);
-      tx=(_hd.x*-y+Math.cos(yaw)*x)*1.5;tz=(_hd.z*-y-Math.sin(yaw)*x)*1.5;ty=_hd.y*-y*1.5;
-    }
-    ptr.vx=(ptr.vx||0)+(tx-(ptr.vx||0))*Math.min(1,dt*8);ptr.vz=(ptr.vz||0)+(tz-(ptr.vz||0))*Math.min(1,dt*8);ptr.vy=(ptr.vy||0)+(ty-(ptr.vy||0))*Math.min(1,dt*8);
+    // stick izquierdo: adelante/atrás y a los lados, en horizontal, según hacia dónde miras
+    const {yaw}=headPose(),tx=(Math.sin(yaw)*y+Math.cos(yaw)*x)*spd,tz=(Math.cos(yaw)*y-Math.sin(yaw)*x)*spd;
+    ptr.vx=(ptr.vx||0)+(tx-(ptr.vx||0))*ease;ptr.vz=(ptr.vz||0)+(tz-(ptr.vz||0))*ease;
     rig.position.x+=ptr.vx*dt;rig.position.z+=ptr.vz*dt;
-    if(vr.fly)rig.position.y=clamp(rig.position.y+ptr.vy*dt,-.8,ROOM_H-1.9);
     keepHeadInRoom();
   }else{
-    // estándar de Quest: ← → gira 45° de golpe; ↑ muestra el arco y al soltar te teletransporta
-    const horiz=Math.abs(x)>.7&&Math.abs(y)<.55,fwd=y<-.6&&Math.abs(x)<.6;
-    if(horiz&&!ptr.snap&&!ptr.aiming){ptr.snap=true;snapTurn(x>0?-Math.PI/4:Math.PI/4);buzz(ptr,.15,15);}
+    // stick derecho: ↑ subir hacia el techo · ↓ bajar hasta tocar el suelo · ← → girar 45°
+    const ty=Math.abs(y)>Math.abs(x)*.8?-y*spd*.8:0;
+    ptr.vy=(ptr.vy||0)+(ty-(ptr.vy||0))*ease;
+    rig.position.y=clamp(rig.position.y+ptr.vy*dt,-1.5,ROOM_H);
+    keepHeadInRoom();
+    const horiz=Math.abs(x)>.7&&Math.abs(y)<.45;
+    if(horiz&&!ptr.snap){ptr.snap=true;snapTurn(x>0?-Math.PI/4:Math.PI/4);buzz(ptr,.15,15);}
     if(Math.abs(x)<.3)ptr.snap=false;
-    if(fwd||(ptr.aiming&&y<-.3)){ptr.aiming=true;ptr.tpAim=teleportTarget(ptr);arcLine.visible=true;arcLine.material.color.set(ptr.tpAim?'#5ef0c8':'#e0603f');}
-    else if(ptr.aiming){
-      ptr.aiming=false;arcLine.visible=false;
-      if(ptr.tpAim){doTeleport(ptr.tpAim);buzz(ptr,.3,30);}
-      ptr.tpAim=null;
-    }
   }
   const pressed=i=>!!(gp.buttons[i]&&gp.buttons[i].pressed),edge=i=>pressed(i)&&!ptr.prev[i];
   if(edge(4)){vr.show=!vr.show;if(vr.show&&!vr.placed)placePanel();}
@@ -3550,7 +3874,7 @@ function load(){
     const raw=localStorage.getItem(KEY);if(!raw)return false;
     const d=JSON.parse(raw);if(d.v!==2)return false;
     S=d.S;S.vis??=1.6;S.cap??=1500;S.ships??=[];S.ruins??=[];
-    S.fires??=[];S.floods??=[];S.swarms??=[];S.shots??=[];S.plagueSeq??=0;S.sickN??=0;S.vStrain??=1;S.evo??=1;
+    S.fires??=[];S.floods??=[];S.swarms??=[];S.shots??=[];S.tornados??=[];S.defend??=null;S.plagueSeq??=0;S.sickN??=0;S.vStrain??=1;S.evo??=1;
     S.lakes??=[];S.wild??=[];S.meteors??=[];S.daynight??=true;S.links??=[];S.treks??=[];
     wallT.set(d.wt);wallHP.set(d.wh);for(let i=0;i<wallT.length;i++)if(wallT[i]===VOID)wallHP[i]=WALL_HP[VOID];
     S.creatures=S.creatures.map(o=>Object.assign(blankC(),o,{held:false}));
@@ -3585,6 +3909,7 @@ function loop(now){
     grabUpdate();
     updatePanelDrag();
   }else controls.update();
+  laserUpdate();
   for(const b of emButtons)if(b.userData.pressed>0)b.userData.pressed--;
 
   panel.visible=xr&&vr.show;
@@ -3603,7 +3928,7 @@ renderer.setAnimationLoop(loop);
 setTimeout(()=>toast('La vida empieza en R5 como células. Si rompen las paredes, se escaparán por la mesa.'),600);
 window.lab={get S(){return S;},step,startJump,stopJump,emergency,vaccinate,camera,controls,world,rig,drawPanel,vr,music,setMode,focusOn,stageOf,P3,REGIONS,launchShip,
   startFire,startRain,startPlague,startSwarm,declareWar,makePeace,armTribe,findBuildingAt,destroyBuilding,setSpeed,PROF,smashWalls,teleportTarget,computeHit,RECTS,
-  addLake,plantForest,startMeteor,instantJump,doInstantJump,goAbove,goRegion};
+  addLake,plantForest,startMeteor,instantJump,doInstantJump,goAbove,goRegion,startTornado,laserAt,newColonyGame,startDefend,describeAt,laserOpt};
 </script>
 </body>
 </html>
