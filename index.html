@@ -94,6 +94,7 @@ const OUT_FOOD=0.12,OUT_CAP=2600;                  // algas fuera de los recipie
 const VOID=4;                                      // tipo de casilla: vacío entre tierras
 const wallT=new Uint8Array(TW*TH),wallHP=new Float32Array(TW*TH),zone=new Int8Array(TW*TH),openF=new Uint8Array(TW*TH),inRect=new Int8Array(TW*TH);
 const WALL_HP=[0,140,220,80,1e9];
+const bfoot=new Uint8Array(TW*TH);    // planta de los edificios: los seres andan por las calles, no a través de las casas
 const scorch=new Uint32Array(TW*TH);   // hasta qué ciclo la tierra está quemada (no brota nada)
 const waterT=new Uint8Array(TW*TH);    // casillas con agua (lagos): solo las cruzan los que nadan
 const RECTS=[];
@@ -112,7 +113,7 @@ const MAX_LV=10;
 const SMART=0.45;
 const KINDS={tec:{name:'Tecnológica',icon:'🔬'},eco:{name:'Ecologista',icon:'🌳'},des:{name:'Destructora',icon:'💣'},mar:{name:'Marinera',icon:'⚓'}};
 let S=null,zonesDirty=true,bgDirty=true,wallsDirty=true,roadsDirty=true;
-const hooks={event:()=>{}};
+const hooks={event:()=>{},dead:null};   // dead: la interfaz recibe a cada ser que muere (para verlo caer)
 const cgrid=Array.from({length:GW*GH},()=>[]),pgrid=Array.from({length:GW*GH},()=>[]);
 const rand=(a,b)=>a+Math.random()*(b-a);
 const clamp=(v,a,b)=>v<a?a:v>b?b:v;
@@ -174,7 +175,7 @@ function blankC(){
   return {id:0,type:'p',sex:'f',x:0,y:0,dir:0,age:0,energy:0,maxAge:0,gen:0,g:null,mut:null,gm:1,preg:0,
     mateG:null,mateM:null,mateGen:0,mateImm:false,mateILv:0,cd:0,rest:0,zombie:0,inc:0,zAge:0,tribe:0,herd:0,
     warrior:false,mig:null,immune:false,iLv:0,strain:0,rage:0,rx:0,ry:0,z:0,dead:false,held:false,sick:0,plague:0,
-    pImm:null,cause:null,diedAt:0,regenAt:-1e9,onShip:false,px:0,py:0,va:0,spawnF:-1,scout:0,scx:0,scy:0};
+    pImm:null,cause:null,diedAt:0,regenAt:-1e9,onShip:false,px:0,py:0,va:0,spawnF:-1,scout:0,scx:0,scy:0,hitT:-1e9,wph:0};
 }
 function mkC(type,sex,x,y,g,gen,energy){
   const c=blankC();
@@ -213,7 +214,7 @@ function cure(c){c.zombie=0;c.zAge=0;c.inc=0;c.cd=200;c.energy=Math.max(c.energy
 function kill(c,cause,force){
   if(c.dead)return;
   if(!force&&c.mut.regen&&!c.zombie&&cause!=='vejez'&&S.tick-(c.regenAt??-1e9)>600){c.regenAt=S.tick;c.energy=Math.max(c.energy,12*sz(c)**2);return;}
-  c.dead=true;c.cause=cause;c.diedAt=S.tick;
+  c.dead=true;c.cause=cause;c.diedAt=S.tick;if(hooks.dead)hooks.dead(c);
   if(cause!=='devorado'&&Math.random()<0.4&&!blocked(c.x,c.y))S.plants.push({x:c.x,y:c.y,z:zoneAt(c.x,c.y),dead:false});
 }
 function pickRage(c){
@@ -272,6 +273,12 @@ function moveC(c,mv,brk){
   if(nx<1||ny<1||nx>W-1||ny>H-1){c.dir+=Math.PI*0.7;return;}
   const wi=tIdx(nx,ny);
   if(wi>=0&&waterT[wi]&&!waterT[tIdx(c.x,c.y)]&&!swims(c)){c.dir+=Math.PI*(0.5+Math.random());return;}   // la orilla
+  if(wi>=0&&bfoot[wi]&&!bfoot[tIdx(c.x,c.y)]){   // un edificio delante: lo rodea por la calle
+    const sd=c.id&1?1:-1;
+    for(const da of [.7*sd,-.7*sd,1.4*sd,-1.4*sd]){const d2=c.dir+da,x2=c.x+Math.cos(d2)*mv,y2=c.y+Math.sin(d2)*mv,i2=tIdx(x2,y2);
+      if(i2>=0&&!bfoot[i2]&&!wallT[i2]&&!(waterT[i2]&&!swims(c))){c.x=x2;c.y=y2;return;}}
+    c.dir+=Math.PI;return;
+  }
   if(blocked(nx,ny)){
     const ti=tIdx(nx,ny);
     if(wallT[ti]===VOID)c.dir+=Math.PI*(0.6+Math.random()*0.8);
@@ -315,14 +322,14 @@ function step(){
   if(zonesDirty){computeZones();_t=pt('zones',_t);}
   const pc=new Int32Array(7);for(const p of S.plants)pc[p.z]++;
   for(let n=0;n<FOOD_TRIES*S.food;n++){
-    const x=rand(1,W-1),y=rand(1,H-1),i=tIdx(x,y);if(i<0||wallT[i]||scorch[i]>t)continue;
+    const x=rand(1,W-1),y=rand(1,H-1),i=tIdx(x,y);if(i<0||wallT[i]||bfoot[i]||scorch[i]>t)continue;
     const z=zone[i];if(pc[z]>=(z?650:OUT_CAP))continue;
     const f=waterT[i]?OUT_FOOD*3:z?plantF(S.env[z-1]):OUT_FOOD;   // los lagos están llenos de algas
     if(Math.random()<f){S.plants.push({x,y,z,dead:false});pc[z]++;}
   }
   if(t%5===0&&S.plants.length<9000)for(const id in S.tribes){
     const tb=S.tribes[id],f=tb.farms;
-    for(let n=f.length*0.12*S.food;n>0;n--){if(Math.random()>=n)continue;const i=f[(Math.random()*f.length)|0];if(wallT[i])continue;
+    for(let n=f.length*0.12*S.food;n>0;n--){if(Math.random()>=n)continue;const i=f[(Math.random()*f.length)|0];if(wallT[i]||bfoot[i])continue;
       S.plants.push({x:(i%TW+Math.random())*T,y:(((i/TW)|0)+Math.random())*T,z:zone[i],dead:false});}
     // los árboles también dan comida a su alrededor
     for(const tr of tb.trees||[])if(Math.random()<0.25*S.food){const x=tr.x+rand(-10,10),y=tr.y+rand(-10,10);if(!blocked(x,y))S.plants.push({x,y,z:zoneAt(x,y),dead:false});}
@@ -331,6 +338,7 @@ function step(){
   if(S.meteors.length)meteorTick();
   if(t%20===0)for(const p of S.plants){if(!p.z)continue;const E=S.env[p.z-1];if((E.temp>58||E.temp<-8||E.rad>7)&&Math.random()<0.15)p.dead=true;}
   if(S.ships.length)shipTick();
+  if(S.treks.length)trekTick();
   _t=pt('plants',_t);
 
   for(const a of cgrid)a.length=0;for(const a of pgrid)a.length=0;
@@ -437,7 +445,7 @@ function step(){
       if((foe.x-c.x)**2+(foe.y-c.y)**2<reach*reach){
         const ft=civOf(foe),home=ft&&(foe.x-ft.hx)**2+(foe.y-ft.hy)**2<ft.r2;
         const a=power(c)*(inWalls(tb,c)?tb.def:1),b=power(foe)*(home?1.3:1)*(inWalls(ft,foe)?ft.def:1);
-        const loser=a>=b?foe:c,winner=loser===c?foe:c,lt=civOf(winner);
+        const loser=a>=b?foe:c,winner=loser===c?foe:c,lt=civOf(winner);c.hitT=foe.hitT=S.tick;
         kill(loser,'caído en la guerra'+(lt?' contra los '+lt.name:''));hooks.event('fight',loser);
         if(loser.dead){pop--;if(winner.type==='d')winner.energy+=8*sz(loser)**2;if(loser===c)continue;}
       }
@@ -569,7 +577,8 @@ const WATER_B={muelle:4,palafito:12,faro:6,astillero:6};   // necesitan agua a e
 const BORDER=['torre','muralla','atalaya','fortaleza','escudo','muelle','palafito','faro','astillero','pozo','choza','casa','mercado','granja','molino','iglesia','cuartel','canon','bomberos','hospital','bloque','rascacielos','fabrica',
   'invernadero','universidad','aerogenerador','bunker','panel','parque','antena','cohete','biocupula','datos','esfera','colmena'];
 /* distancia a la plaza a la que construye cada estilo: la metrópolis, apiñada; el campo, disperso */
-const SPREAD={tec:[12,22,8],eco:[20,48,16],des:[14,30,11],mar:[12,44,14]};
+const SPREAD={tec:[18,28,10],eco:[24,56,18],des:[18,36,13],mar:[16,50,16]};
+const STREET=6;   // hueco libre entre edificios: las calles por las que andan
 const hasB=(tb,k)=>tb.buildings.some(b=>b.k===k);
 function placeNear(tb,size,list,minD,maxD,needWater=0){
   const hz=zoneAt(tb.hx,tb.hy),reg=regionOf(tb.hx,tb.hy);
@@ -579,7 +588,7 @@ function placeNear(tb,size,list,minD,maxD,needWater=0){
     if(needWater&&!nearWater(x,y,needWater))continue;
     let ok=true;
     // sin pisar edificios de ningún pueblo (también de los vecinos)
-    forBuildingsNear(x,y,size*0.6*BSCALE,()=>{ok=false;});
+    forBuildingsNear(x,y,size*0.6*BSCALE+STREET,()=>{ok=false;});
     if(ok&&list!==tb.buildings)for(const b of list)if((b.x-x)**2+(b.y-y)**2<(size*1.6)**2){ok=false;break;}
     if(ok)return{x,y,a:Math.atan2(tb.hy-y,tb.hx-x)};
   }
@@ -678,7 +687,7 @@ const inWalls=(tb,o)=>tb&&tb.wr>0&&(o.x-tb.hx)**2+(o.y-tb.hy)**2<tb.wr*tb.wr;
 function townRadius(tb){
   let r=26;
   for(const b of tb.buildings){if(RING_B.has(b.k)||b.k==='atalaya')continue;const d=Math.hypot(b.x-tb.hx,b.y-tb.hy)+BSIZE[b.k]*BSCALE*.6;if(d>r)r=d;}
-  return Math.min(r+6,150);
+  return Math.min(r+6,180);
 }
 /* sitio para una atalaya sobre la muralla (lejos de las puertas y de otras atalayas) */
 function placeOnWall(tb,w){
@@ -729,6 +738,8 @@ function defendTick(tb,mult){
   }
   if(sh){sh.r=Math.max(sh.r,(w?w.r:townRadius(tb))+5);sh.e=Math.min(100,(sh.e??100)+3*mult);}
   tb.wr=w?w.r:0;tb.watch=watch;
+  // la gente vive por toda la ciudad, no apiñada en la plaza: el "en casa" crece con el pueblo
+  if(tb.lvl>=3){const R=Math.max(7*T+4,(w?w.r:townRadius(tb))*.8);tb.r2=R*R;}
   tb.def=1+(w?.35*clamp((w.hp??60)/TOUGH.muralla,0,1):0)+.08*watch+.25*fort;
 }
 
@@ -1044,7 +1055,7 @@ function instantJump(n,untilEra=false){
       const sm=ticks>=50000?10:5;for(let k=0;k<chunk/(50*sm);k++)socialTick(sm);
       // las catástrofes y los saltos espaciales se resuelven
       S.fires=[];for(const f of S.floods)f.t=f.dur;if(S.floods.length)disasterTick(5);
-      S.swarms=[];S.shots=[];for(const sh of S.ships)sh.t=sh.dur;if(S.ships.length)shipTick();
+      S.swarms=[];S.shots=[];for(const sh of S.ships)sh.t=sh.dur;if(S.ships.length)shipTick();for(const k of S.treks)k.t=k.dur;if(S.treks.length)trekTick();
       for(const m of S.meteors)m.t=m.dur;if(S.meteors.length)meteorTick();
       // la vegetación vuelve a crecer
       for(let k=0;k<Math.min(chunk,400);k++){const x=rand(1,W-1),y=rand(1,H-1),i=tIdx(x,y);if(i>=0&&!wallT[i]&&S.plants.length<8000)S.plants.push({x,y,z:zone[i],dead:false});}
@@ -1199,6 +1210,67 @@ function socialTick(mult=1){
     }
     if(tb.lvl>=9&&tb.n>=12&&!tb.war&&S.tick-tb.lastShip>2500&&S.ships.length<4&&Object.keys(TB).length<20&&Math.random()<0.5)launchShip(tb);
   }
+  linkTick(mult);
+  rebuildFoot();
+}
+/* planta de los edificios en casillas (se rehace en cada turno social); las algas que quedan dentro desaparecen */
+function rebuildFoot(){
+  bfoot.fill(0);
+  for(const id in S.tribes)for(const b of S.tribes[id].buildings){
+    if(RING_B.has(b.k)||WALKABLE.has(b.k))continue;
+    const r=BSIZE[b.k]*BSCALE*.42,tx0=Math.floor((b.x-r)/T),tx1=Math.floor((b.x+r)/T),ty0=Math.floor((b.y-r)/T),ty1=Math.floor((b.y+r)/T);
+    for(let ty=Math.max(0,ty0);ty<=Math.min(TH-1,ty1);ty++)for(let tx=Math.max(0,tx0);tx<=Math.min(TW-1,tx1);tx++){
+      const cx=(tx+.5)*T,cy=(ty+.5)*T;if((cx-b.x)**2+(cy-b.y)**2<r*r)bfoot[ty*TW+tx]=1;}
+  }
+  for(const p of S.plants){const i=tIdx(p.x,p.y);if(i>=0&&bfoot[i])p.dead=true;}
+}
+const WALKABLE=new Set(['mercado','parque','muelle','pozo','panel','fortaleza','canon']);
+
+/* ---- 🌉 Puentes colgantes y tubos de cristal entre ciudades ----
+   Desde el Reino, dos ciudades vecinas en paz tienden un puente colgante; desde la era moderna lo
+   convierten en un tubo de cristal, y una colonia puede unirse por tubo con su metrópoli aunque esté
+   en otra tierra. Por ellos viajan y se mudan habitantes, y el saber pasa de una ciudad a otra. */
+const linksOf=tb=>S.links.filter(l=>l.a===tb.id||l.b===tb.id).length;
+const linked=(a,b)=>S.links.some(l=>(l.a===a.id&&l.b===b.id)||(l.a===b.id&&l.b===a.id));
+function linkTick(mult){
+  const TB=S.tribes;
+  for(let i=S.links.length-1;i>=0;i--){
+    const l=S.links[i],a=TB[l.a],b=TB[l.b];
+    if(!a||!b||a.war===b.id){S.links.splice(i,1);if(a&&b)hooks.event('linkcut',a,b);continue;}
+    if(l.p<1){l.p=Math.min(1,l.p+.05*mult);if(l.p>=1)hooks.event('link',a,{b,k:l.k});continue;}
+    if(l.k==='puente'&&a.lvl>=8&&b.lvl>=8){l.k='tubo';l.p=.5;continue;}   // se modernizan: el puente pasa a ser un tubo
+    const lo=a.know<b.know?a:b,hi=lo===a?b:a;lo.know+=Math.min(60,(hi.know-lo.know)*.01)*mult;
+    if(S.treks.length<14&&Math.random()<.3*mult)startTrek(Math.random()<.5?a:b,l);
+  }
+  if(S.links.length>=16)return;
+  for(const id in TB){
+    const tb=TB[id];if(tb.lvl<6||tb.n<5||Math.random()>.05*mult||linksOf(tb)>=2)continue;
+    const reg=regionOf(tb.hx,tb.hy);let best=null,bd=Infinity;
+    for(const oid in TB){
+      const o=TB[oid];if(o===tb||o.lvl<6||tb.war===o.id||linked(tb,o)||linksOf(o)>=2)continue;
+      const fam=o.parent===tb.id||tb.parent===o.id,same=regionOf(o.hx,o.hy)===reg,d=Math.hypot(o.hx-tb.hx,o.hy-tb.hy);
+      if(same?(d<90||d>430):!(fam&&tb.lvl>=8&&o.lvl>=8))continue;
+      const sc=same?d:2000;if(sc<bd){bd=sc;best=o;}
+    }
+    if(best){S.links.push({a:tb.id,b:best.id,k:tb.lvl>=8&&best.lvl>=8?'tubo':'puente',p:0});hooks.event('linkStart',tb,best);break;}
+  }
+}
+function startTrek(tb,l){
+  const to=S.tribes[l.a===tb.id?l.b:l.a];if(!to)return;
+  let c=null;
+  for(const o of S.creatures)if(o.tribe===tb.id&&!o.dead&&!o.zombie&&!o.warrior&&!o.mig&&!o.held&&!o.scout&&o.age>250&&Math.random()<.2){c=o;break;}
+  if(!c)return;
+  c.onShip=true;S.creatures=S.creatures.filter(o=>o!==c);
+  S.treks.push({c,from:tb.id,to:to.id,k:l.k,t:0,dur:l.k==='tubo'?260:700});
+}
+function trekTick(){
+  for(const k of S.treks){
+    k.t++;if(k.t<k.dur)continue;k.done=true;
+    const c=k.c,to=S.tribes[k.to]||S.tribes[k.from];c.onShip=false;
+    if(to){c.x=to.hx+rand(-8,8);c.y=to.hy+rand(-8,8);if(blocked(c.x,c.y)){c.x=to.hx;c.y=to.hy;}c.tribe=to.id;}
+    c.mig=null;c.px=c.x;c.py=c.y;c.z=zoneAt(c.x,c.y);S.creatures.push(c);
+  }
+  S.treks=S.treks.filter(k=>!k.done);
 }
 function spawnGroup(type,sex,n,x,y){
   let made=0;
@@ -1216,9 +1288,9 @@ function addPlants(z,n){
   for(let k=0;k<n*6&&placed<n;k++){const x=rand(R.x*T,(R.x+R.w)*T),y=rand(R.y*T,(R.y+R.h)*T);if(!blocked(x,y)&&zoneAt(x,y)===z){S.plants.push({x,y,z,dead:false});placed++;}}
 }
 function fresh(){
-  S={tick:0,nextId:1,creatures:[],plants:[],tribes:{},tribeSeq:0,env:RECTS.map(()=>({...AMB})),food:1,mut:1,vis:1.6,cap:700,breaks:0,births:0,nextImm:35,ships:[],ruins:[],
+  S={tick:0,nextId:1,creatures:[],plants:[],tribes:{},tribeSeq:0,env:RECTS.map(()=>({...AMB})),food:1,mut:1,vis:1.6,cap:700,breaks:0,births:0,nextImm:35,ships:[],ruins:[],links:[],treks:[],
     fires:[],floods:[],swarms:[],shots:[],plagueSeq:0,sickN:0,vStrain:1,evo:1,lakes:[],wild:[],meteors:[],daynight:true};
-  waterT.fill(0);scorch.fill(0);
+  waterT.fill(0);scorch.fill(0);bfoot.fill(0);
   buildRecipients();computeZones();
   for(let z=1;z<=6;z++)addPlants(z,90);
   // R5: presas solas, para que la vida tenga tiempo de evolucionar.
@@ -1286,6 +1358,9 @@ hooks.event=(k,a,b)=>{
   if(k==='shieldHit'){if(fxB.booms.length<80){const v=shotPos(a,b.f,_s3c);fxB.booms.push({x:v.x,y:v.y,z:v.z,t:0,shield:true});}return;}
   if(k==='shieldMeteor'){const q=P3(a.x,a.y);fxB.booms.push({x:q.x,y:q.y+a.hy*K,z:q.z,t:0,big:true,shield:true});
     toast(`🛡️ ¡La cúpula-escudo de los ${b.name} ha detenido el meteorito!`);return;}
+  if(k==='linkStart'){toast(`🌉 Los ${a.name} y los ${b.name} empiezan a tender un camino colgante entre sus ciudades.`);return;}
+  if(k==='link'){toast(b.k==='tubo'?`🚇 Los ${a.name} y los ${b.b.name} ya están unidos por un tubo de cristal.`:`🌉 El puente colgante entre los ${a.name} y los ${b.b.name} está terminado.`);return;}
+  if(k==='linkcut'){toast(`✂️ Guerra: los ${a.name} y los ${b.name} cortan el puente que los unía.`);return;}
   if(k==='synth'){toast(`✨ Los ${a.name} dejan atrás las casas: su vida sintética habita torres de datos, esferas de cristal y colmenas de luz.`);return;}
   if(k==='scout'){if(performance.now()-lastScoutToast>25000){lastScoutToast=performance.now();toast(`🧭 Los exploradores de los ${a.name} han descubierto ${b.what}.`);}return;}
   if(k==='fight'){if(fxB.booms.length<60){const q=P3(a.x,a.y);fxB.booms.push({x:q.x,y:q.y+.01,z:q.z,t:.3,spark:true});}return;}
@@ -1622,13 +1697,17 @@ const B={
   // era sintética y defensas
   hex:  makePool(base0(new THREE.CylinderGeometry(1,1,1,6)),flat('#ffffff'),1500),
   hexL: makePool(base0(new THREE.CylinderGeometry(1,1,1,6)),basic(),1500),
-  orb:  makePool(new THREE.SphereGeometry(1,16,10),std({transparent:true,opacity:.35,depthWrite:false,roughness:.05,metalness:.3}),300,dynPools,2),
+  orb:  makePool(new THREE.SphereGeometry(1,16,10),std({transparent:true,opacity:.35,depthWrite:false,roughness:.05,metalness:.3}),500,dynPools,2),
   shield:makePool(new THREE.SphereGeometry(1,24,12,0,Math.PI*2,0,Math.PI/2),basic({transparent:true,opacity:.18,blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.DoubleSide}),40,dynPools,3),
 };
 const WP={
   glass:makePool(base0(new THREE.BoxGeometry(1,1,1)),std({transparent:true,opacity:.42,depthWrite:false,roughness:.1,metalness:.1}),4000,wallPools,2),
   stone:makePool(base0(new THREE.BoxGeometry(1,1,1)),flat('#ffffff'),12000,wallPools),
   wood: makePool(base0(new THREE.BoxGeometry(1,1,1)),flat('#ffffff'),5000,wallPools),
+};
+const LK={   // puentes y tubos entre ciudades
+  plank:makePool(new THREE.BoxGeometry(1,1,1),flat('#ffffff'),6000),
+  tube: makePool(base0(new THREE.CylinderGeometry(1,1,1,10,1,true)),std({transparent:true,opacity:.28,depthWrite:false,side:THREE.DoubleSide,roughness:.08,metalness:.2}),900,dynPools,2),
 };
 const COL={p:rgb('#4CC9FF'),d:rgb('#FF5533'),z:rgb('#B5F03C'),i:rgb('#A970FF')};
 const C={
@@ -1652,6 +1731,7 @@ const C={
   maple:rgb('#d2581e'),maple2:rgb('#e8a02a'),cypress:rgb('#2a4a2e'),baobab:rgb('#9a8064'),lake:rgb('#3a8fc8'),
   pier:rgb('#8a6a48'),hull:rgb('#7a4a2a'),hull2:rgb('#2a3a5a'),sailW:rgb('#f2efe4'),light:rgb('#fff2a0'),splash:rgb('#7ac8ff'),
   stoneW:rgb('#9a9184'),earth:rgb('#7a5a3a'),pack:rgb('#6a4a2a'),shieldC:rgb('#6ad8ff'),
+  rope:rgb('#c8b48a'),plankC:rgb('#9a7448'),helmet:rgb('#f2c230'),grave:rgb('#8d9096'),pod:rgb('#ffe07a'),saucer:rgb('#c9d3dc'),
   obsid:rgb('#1c2030'),crystal:rgb('#c8f2ff'),hive1:rgb('#ffcf4a'),hive2:rgb('#5ef0ff'),hexBody:rgb('#2a3040'),
 };
 
@@ -1730,20 +1810,29 @@ function showVrToast(m){
 /* ---------- Organismos: una forma por etapa de la evolución ---------- */
 const hills=[];   // colinas de las fortalezas (se rellenan al dibujar los pueblos; los seres suben por ellas)
 function hillY(x,y){let h=0;for(const q of hills){const d2=(x-q.x)**2+(y-q.y)**2;if(d2<q.r2){const v=q.h*Math.sqrt(1-d2/q.r2);if(v>h)h=v;}}return h;}
+/* Nivel de detalle: los seres cercanos a tu cabeza se dibujan con todo detalle; los lejanos, con tres piezas */
+const camL=new THREE.Vector3();let camS2=1;
+const LOD_NEAR=1.15*1.15,LOD_FAR=3.6*3.6;
+function updateCamL(){const hp=headPose().pos;camL.copy(hp);world.worldToLocal(camL);camS2=world.scale.x*world.scale.x;}
 function drawCreatures(){
   const vis=S.vis,many=S.creatures.length>1300||(renderer.xr.isPresenting&&S.creatures.length>800),blink=frameN%20<10;
+  const gaitK=Math.min(speed,4)*2.4;
   for(const c of S.creatures){
     if(c.va===undefined)c.va=c.dir;
     const da=((c.dir-c.va+Math.PI)%(2*Math.PI)+2*Math.PI)%(2*Math.PI)-Math.PI;c.va+=da*0.15;
     const st=stageOf(c),pd=c.type==='d',a=c.va,ca=Math.cos(a),sa=Math.sin(a),rot=-a;
-    const s=Math.max(2.4,sz(c)*1.9)*vis*(st>=4?1.6:st===0?1.35:1),u=s*K;
+    const kid=st>=4?clamp(.6+.4*c.age/500,.6,1):1;   // los niños, más pequeños
+    const s=Math.max(2.4,sz(c)*1.9)*vis*(st>=4?1.6*kid:st===0?1.35:1),u=s*K;
     let rx=c.x,ry=c.y;
     if(alpha<1&&c.px!==undefined&&!c.held&&Math.abs(c.x-c.px)+Math.abs(c.y-c.py)<20){rx=c.px+(c.x-c.px)*alpha;ry=c.py+(c.y-c.py)*alpha;}
     const p=P3(rx,ry),X=p.x,Z=p.z,Y0=p.y+(c.held?.06:0)+(hills.length?hillY(rx,ry):0);
     const zomb=c.zombie||(c.inc>0&&blink);
     let col=zomb?COL.z:c.immune&&st<5?COL.i:c.herd?C.cow:COL[c.type];
     if(c.sick&&!zomb)col=[...lerpRGB(col,C.sick,.6)];
-    const ph=frameN*(c.scout>0?.13:.3)+c.id,sw=Math.sin(ph);   // los exploradores caminan despacio
+    // paso: las piernas se mueven según lo que avanza de verdad (quieto = quieto; corriendo = zancadas)
+    const vel=c.held?0:Math.min(3,Math.hypot(c.x-c.px,c.y-c.py));
+    c.wph+=Math.min(.55,vel*gaitK)+(st<2&&speed>0?.08:0);
+    const amp=st<2?1:Math.min(1,vel*1.6),ph=c.wph+c.id,sw=Math.sin(ph)*amp;
     // posición relativa: f = hacia delante, s = hacia el lado
     const ox=(f,sd)=>X+ca*f-sa*sd,oz=(f,sd)=>Z+sa*f+ca*sd;
     let ringY=Y0+.003,ringR=u*.5;
@@ -1772,52 +1861,100 @@ function drawCreatures(){
       const Y=Y0+.42*u;
       inst(P.body,X,Y,Z,rot,.42*u,.19*u,.2*u,col);
       inst(P.head,ox(.5*u,0),Y+.14*u,oz(.5*u,0),rot,.17*u,.14*u,.12*u,col);
-      for(const [fx,sd] of [[.27,1],[.27,-1],[-.27,1],[-.27,-1]]){const o=Math.sin(ph+(fx>0?0:3)+(sd>0?1.5:0))*.06*u;
+      for(const [fx,sd] of [[.27,1],[.27,-1],[-.27,1],[-.27,-1]]){const o=Math.sin(ph+(fx>0?0:3)+(sd>0?1.5:0))*.06*u*amp;
         inst(P.box,ox(fx*u+o,.12*u*sd),Y0+.17*u,oz(fx*u+o,.12*u*sd),rot,.08*u,.34*u,.08*u,scaleRGB(col,.8));}
       if(!many){
         inst(P.box,ox(-.48*u,0),Y+.02*u,oz(-.48*u,0),rot+sw*.3,.22*u,.04*u,.04*u,col);
         for(const sd of [-1,1])inst(P.eye,ox(.62*u,.06*u*sd),Y+.2*u,oz(.62*u,.06*u*sd),0,u*.035,u*.035,u*.035,zomb?C.eyeZ:C.white);
       }
     }else{                                              // homínido, humano o sintético
-      const syn=st===6,hom=st===4,tb=c.tribe&&S.tribes[c.tribe];
+      const syn=st===6,hom=st===4,tb=c.tribe&&S.tribes[c.tribe],lv=tb?tb.lvl:3;
+      const d2=((X-camL.x)**2+(Y0-camL.y)**2+(Z-camL.z)**2)*camS2;
+      const lod=c.held||d2<LOD_NEAR?2:many||d2>LOD_FAR?0:1;
       // aspecto: el del pueblo (piel, altura, complexión, tocado) + una variación propia de cada individuo
       const lk=tb&&tb.look||null,hv=((c.id*9301+49297)%233280)/233280,hv2=(hv*7.31)%1;
-      const H=(lk?lk.h:1)*(.88+.24*hv)*(c.sex==='m'?1.04:.96),Wb=(lk?lk.w:1)*(.88+.28*hv2),Hd=lk?lk.head:1;
+      const H=(lk?lk.h:1)*(.88+.24*hv)*(c.sex==='m'?1.04:.96),Wb=(lk?lk.w:1)*(.88+.28*hv2),Hd=(lk?lk.head:1)*(kid<1?1.15:1);
       const skinHex=lk?lk.skin:(pd?SKINS_D:SKINS_P)[c.id%(pd?SKINS_D.length:SKINS_P.length)];
       const skin=zomb?COL.z:syn?C.cyan:rgb(skinHex);
       const shirt=zomb?COL.z:syn?C.chrome:hom?scaleRGB(rgb(skinHex),.85):(tb?rgb(tb.col):col);
       const shirtC=[shirt[0],shirt[1],shirt[2]];
       const legs=zomb?scaleRGB(COL.z,.7):syn?C.chrome2:hom?scaleRGB(rgb(skinHex),.7):rgb(lk?lk.pants:'#34404c');
       const legsC=[legs[0],legs[1],legs[2]];
-      const Y=Y0+(syn?.06*u+Math.sin(ph*.3)*.02*u:0),lean=hom?.08*u:0,hu=u*H;
-      for(const sd of [-1,1])inst(P.box,ox(sw*sd*.09*u,.08*u*sd*Wb),Y+.2*hu,oz(sw*sd*.09*u,.08*u*sd*Wb),rot,.1*u,.4*hu,.09*u*Wb,legsC);
-      inst(P.box,ox(lean,0),Y+.58*hu,oz(lean,0),rot,.15*u*Wb,.36*hu,.28*u*Wb,shirtC);
-      const hy=Y+.88*hu+(Hd-1)*.06*u,hr=.12*u*Hd;
-      inst(P.head,ox(lean*1.6,0),hy,oz(lean*1.6,0),rot,hr,hr*1.08,hr,skin);
-      // tocado o pelo del pueblo
-      if(lk&&!zomb&&!syn&&!hom){
-        const hc=rgb(lk.hatCol),hx=ox(lean*1.6,0),hz=oz(lean*1.6,0);
-        if(lk.hat===1)inst(B.cone,hx,hy+hr*.6,hz,0,hr*1.05,hr*2.2,hr*1.05,hc);
-        else if(lk.hat===2){inst(B.cyl,hx,hy+hr*.55,hz,0,hr*2,hr*.15,hr*2,hc);inst(B.cyl,hx,hy+hr*.6,hz,0,hr*.95,hr*.8,hr*.95,hc);}
-        else if(lk.hat===3)inst(B.dome,hx,hy+hr*.15,hz,0,hr*1.12,hr*1.05,hr*1.12,hc);
-        else if(lk.hat===4)inst(P.head,ox(lean*1.6-hr*.7,0),hy+hr*.5,oz(lean*1.6-hr*.7,0),0,hr*.55,hr*.55,hr*.55,rgb(lk.hair));
-        else if(lk.hat===5)inst(B.dome,hx,hy+hr*.05,hz,0,hr*1.06,hr*1.02,hr*1.06,rgb(lk.hair));
-      }
-      if(!many)for(const sd of [-1,1])inst(P.box,ox(-sw*sd*.1*u,.19*u*sd*Wb),Y+.56*hu,oz(-sw*sd*.1*u,.19*u*sd*Wb),rot,.07*u,.34*hu,.07*u,hom?shirtC:skin);
-      if(c.warrior){
-        // arma según la era (siempre visible): lanza → espada y escudo → fusil
-        const lv=tb?tb.lvl:4;
-        if(lv>=7){inst(P.box,ox(.26*u,.16*u),Y+.64*hu,oz(.26*u,.16*u),rot,.62*u,.08*u,.07*u,C.gun);inst(P.box,ox(.02*u,0),Y+.6*hu,oz(.02*u,0),rot,.17*u*Wb,.2*hu,.3*u*Wb,C.bunker);}
-        else if(lv>=5){inst(P.box,ox(.12*u,.26*u),Y+.7*hu,oz(.12*u,.26*u),rot,.05*u,.6*u,.05*u,C.spear);
-          inst(P.box,ox(.1*u,-.27*u),Y+.55*hu,oz(.1*u,-.27*u),rot,.25*u,.32*u,.05*u,tb?rgb(tb.col):C.war);}
-        else inst(P.box,ox(.06*u,.26*u),Y+.75*hu,oz(.06*u,.26*u),rot,.05*u,1.0*u,.05*u,C.spear);
-      }
-      if(c.scout>0&&!many){   // explorador: mochila y bastón
-        inst(P.box,ox(lean-.2*u,0),Y+.62*hu,oz(lean-.2*u,0),rot,.12*u,.24*hu,.22*u*Wb,syn?C.chrome2:C.pack);
-        inst(P.box,ox(.14*u,.26*u),Y+.5*hu,oz(.14*u,.26*u),rot,.04*u,1.0*hu,.04*u,syn?C.cyan:C.trunk);
+      const run=amp>.9&&vel>1.2,bob=lod?Math.abs(Math.sin(ph))*.035*u*amp:0;
+      const Y=Y0+bob+(syn?.06*u+Math.sin(frameN*.04+c.id)*.02*u:0),lean=(hom?.08*u:0)+(run?.06*u:0),hu=u*H;
+      const hy=Y+.88*hu+(Hd-1)*.06*u,hr=.12*u*Hd,hx=ox(lean*1.6,0),hz=oz(lean*1.6,0);
+      const atk=c.warrior&&S.tick-c.hitT<5;   // está golpeando o disparando
+      if(lod===0){                                     // lejos: tres piezas
+        inst(P.box,X,Y+.2*hu,Z,rot,.12*u,.4*hu,.18*u*Wb,legsC);
+        inst(P.box,ox(lean,0),Y+.58*hu,oz(lean,0),rot,.15*u*Wb,.36*hu,.28*u*Wb,shirtC);
+        inst(P.head,hx,hy,hz,rot,hr,hr*1.08,hr,skin);
+        if(c.warrior)inst(P.box,ox(lean-.14*u,0),Y+1.05*hu,oz(lean-.14*u,0),rot,.02*u,.35*hu,.16*u,tb?rgb(tb.col):C.war);
+      }else{
+        for(const sd of [-1,1])inst(P.box,ox(sw*sd*.09*u,.08*u*sd*Wb),Y+.2*hu,oz(sw*sd*.09*u,.08*u*sd*Wb),rot,.1*u,.4*hu,.09*u*Wb,legsC);
+        inst(P.box,ox(lean,0),Y+.58*hu,oz(lean,0),rot,.15*u*Wb,.36*hu,.28*u*Wb,shirtC);
+        inst(P.head,hx,hy,hz,rot,hr,hr*1.08,hr,skin);
+        // tocado o pelo del pueblo
+        if(lk&&!zomb&&!syn&&!hom&&lv<9){
+          const hc=rgb(lk.hatCol);
+          if(lk.hat===1)inst(B.cone,hx,hy+hr*.6,hz,0,hr*1.05,hr*2.2,hr*1.05,hc);
+          else if(lk.hat===2){inst(B.cyl,hx,hy+hr*.55,hz,0,hr*2,hr*.15,hr*2,hc);inst(B.cyl,hx,hy+hr*.6,hz,0,hr*.95,hr*.8,hr*.95,hc);}
+          else if(lk.hat===3)inst(B.dome,hx,hy+hr*.15,hz,0,hr*1.12,hr*1.05,hr*1.12,hc);
+          else if(lk.hat===4)inst(P.head,ox(lean*1.6-hr*.7,0),hy+hr*.5,oz(lean*1.6-hr*.7,0),0,hr*.55,hr*.55,hr*.55,rgb(lk.hair));
+          else if(lk.hat===5)inst(B.dome,hx,hy+hr*.05,hz,0,hr*1.06,hr*1.02,hr*1.06,rgb(lk.hair));
+        }
+        // brazos (en guerra, el derecho golpea hacia delante)
+        const armC=hom?shirtC:lv>=5&&!syn?shirtC:skin;
+        if(!many||lod===2)for(const sd of [-1,1]){
+          if(atk&&sd===1){inst(P.box,ox(lean+.2*u,.19*u*Wb),Y+.68*hu,oz(lean+.2*u,.19*u*Wb),rot,.34*hu,.07*u,.07*u,armC);continue;}
+          inst(P.box,ox(-sw*sd*.1*u,.19*u*sd*Wb),Y+.56*hu,oz(-sw*sd*.1*u,.19*u*sd*Wb),rot,.07*u,.34*hu,.07*u,armC);
+          if(lod===2)inst(P.head,ox(-sw*sd*.14*u,.19*u*sd*Wb),Y+.38*hu,oz(-sw*sd*.14*u,.19*u*sd*Wb),0,.045*u,.045*u,.045*u,skin);   // manos
+        }
+        if(lod===2){                                   // cerca: pies, cara, ropa de su era
+          for(const sd of [-1,1])inst(P.box,ox(sw*sd*.09*u+.03*u,.08*u*sd*Wb),Y+.02*hu,oz(sw*sd*.09*u+.03*u,.08*u*sd*Wb),rot,.15*u,.04*hu,.085*u*Wb,syn?C.chrome2:C.door);
+          if(syn){
+            inst(B.win,ox(lean*1.6+hr*.82,0),hy+hr*.12,oz(lean*1.6+hr*.82,0),rot,.04*u,hr*.32,hr*1.3,C.cyan);              // visor
+            inst(P.glow,ox(lean+.08*u,0),Y+.64*hu,oz(lean+.08*u,0),0,.045*u,.045*u,.045*u,C.cyan);                     // núcleo
+            for(const sd of [-1,1]){inst(P.glow,ox(0,.08*u*sd*Wb),Y+.22*hu,oz(0,.08*u*sd*Wb),0,.035*u,.035*u,.035*u,C.cyan);  // rodillas
+              inst(P.glow,ox(lean,.19*u*sd*Wb),Y+.73*hu,oz(lean,.19*u*sd*Wb),0,.04*u,.04*u,.04*u,C.cyan);}               // hombros
+          }else if(!zomb){
+            for(const sd of [-1,1])inst(P.eye,ox(lean*1.6+hr*.85,hr*.36*sd),hy+hr*.15,oz(lean*1.6+hr*.85,hr*.36*sd),0,hr*.13,hr*.13,hr*.13,C.shell);
+            if(!hom&&lv<=6){   // túnica y cinturón
+              inst(P.box,ox(lean*.6,0),Y+.4*hu,oz(lean*.6,0),rot,.17*u*Wb,.17*hu,.3*u*Wb,scaleRGB(shirtC,.8));
+              inst(P.box,ox(lean*.7,0),Y+.48*hu,oz(lean*.7,0),rot,.165*u*Wb,.035*hu,.295*u*Wb,C.trunk);
+            }else if(lv<=8){   // camisa con cuello y cinturón
+              inst(P.box,ox(lean+.077*u*Wb,0),Y+.66*hu,oz(lean+.077*u*Wb,0),rot,.01*u,.14*hu,.06*u,C.white);
+              inst(P.box,ox(lean,0),Y+.41*hu,oz(lean,0),rot,.155*u*Wb,.03*hu,.285*u*Wb,C.shell);
+            }else{             // era espacial: casco de cristal y mochila de oxígeno
+              inst(B.orb,hx,hy,hz,0,hr*1.45,hr*1.45,hr*1.45,C.crystal);
+              inst(P.box,ox(lean-.12*u,0),Y+.62*hu,oz(lean-.12*u,0),rot,.1*u,.26*hu,.2*u*Wb,C.chrome);
+            }
+          }
+        }
+        if(lv>=9&&!syn&&!zomb&&lod===1)inst(P.head,hx,hy,hz,0,hr*1.3,hr*1.3,hr*1.3,C.chrome);   // casco visto de lejos
+        if(c.warrior){
+          // arma según la era (siempre visible): lanza → espada y escudo → fusil → rayo
+          const tcol=tb?rgb(tb.col):C.war;
+          if(lv>=7){inst(P.box,ox(.26*u,.16*u),Y+.64*hu,oz(.26*u,.16*u),rot,.62*u,.08*u,.07*u,syn?C.chrome:C.gun);
+            if(!syn)inst(P.box,ox(.02*u,0),Y+.6*hu,oz(.02*u,0),rot,.17*u*Wb,.2*hu,.3*u*Wb,C.bunker);
+            if(atk){inst(P.glow,ox(.62*u,.16*u),Y+.64*hu,oz(.62*u,.16*u),0,.09*u,.09*u,.09*u,syn?C.cyan:C.flame);   // fogonazo
+              if(lv>=9)inst(B.win,ox(1.4*u,.16*u),Y+.64*hu,oz(1.4*u,.16*u),rot,1.6*u,.025*u,.025*u,syn?C.cyan:C.spark);}}
+          else if(lv>=5){
+            if(atk)inst(P.box,ox(.45*u,.2*u),Y+.68*hu,oz(.45*u,.2*u),rot,.7*u,.05*u,.05*u,C.spear);
+            else inst(P.box,ox(.12*u,.26*u),Y+.7*hu,oz(.12*u,.26*u),rot,.05*u,.6*u,.05*u,C.spear);
+            inst(P.box,ox(.1*u,-.27*u),Y+.55*hu,oz(.1*u,-.27*u),rot,.25*u,.32*u,.05*u,tcol);}
+          else if(atk)inst(P.box,ox(.5*u,.2*u),Y+.7*hu,oz(.5*u,.2*u),rot,1.0*u,.05*u,.05*u,C.spear);
+          else inst(P.box,ox(.06*u,.26*u),Y+.75*hu,oz(.06*u,.26*u),rot,.05*u,1.0*u,.05*u,C.spear);
+          // banderín a la espalda: se distingue a qué pueblo pertenece cada guerrero
+          inst(P.box,ox(lean-.16*u,0),Y+.95*hu,oz(lean-.16*u,0),rot,.02*u,.55*hu,.02*u,C.trunk);
+          inst(P.box,ox(lean-.16*u,-.09*u),Y+1.13*hu,oz(lean-.16*u,-.09*u),rot,.012*u,.16*hu,.18*u,tcol);
+        }
+        if(c.scout>0){   // explorador: mochila y bastón
+          inst(P.box,ox(lean-.2*u,0),Y+.62*hu,oz(lean-.2*u,0),rot,.12*u,.24*hu,.22*u*Wb,syn?C.chrome2:C.pack);
+          inst(P.box,ox(.14*u,.26*u),Y+.5*hu,oz(.14*u,.26*u),rot,.04*u,1.0*hu,.04*u,syn?C.cyan:C.trunk);
+        }
       }
       if(c.sick&&frameN%30<15)inst(P.glow,X,Y+1.1*hu,Z,0,.06*u,.06*u,.06*u,C.sick);
-      if(syn&&!many)inst(P.halo,ox(lean*1.6,0),hy,oz(lean*1.6,0),0,.2*u,.2*u,.2*u,C.cyan);
+      if(syn&&lod)inst(P.halo,hx,hy,hz,0,.2*u,.2*u,.2*u,C.cyan);
       ringR=u*.32;
     }
     if(c.spawnF>=0&&frameN-c.spawnF<300){const f=1-(frameN-c.spawnF)/300;inst(P.halo,X,Y0+.3*u,Z,0,u*1.4*f+u*.4,u*1.2*f+u*.3,u*1.4*f+u*.4,scaleRGB(C.white,f));}
@@ -2155,7 +2292,7 @@ function drawBuilding(b,tc,kind,ruin,sc=1){
       break;}
     case 'escudo':{    // cúpula-escudo: frena proyectiles y meteoritos (brilla al recibir un golpe)
       const R=(b.r||40)*K,e=clamp((b.e??100)/100,0,1),hit=S.tick-(b.hitT??-99)<12;
-      const br=(hit?1.7:.3+.5*e)*(.85+.15*Math.sin(frameN*.05+b.x));
+      const br=(hit?1.5:.18+.3*e)*(.85+.15*Math.sin(frameN*.05+b.x));
       inst(B.shield,X,Y,Z,frameN*.001,R,R*.75,R,scaleRGB(C.shieldC,br));
       const gx=ox(9,0),gz=oz(9,0),pl=1+.2*Math.sin(frameN*.1);               // generador
       inst(B.cyl,gx,Y,gz,0,1.2*u,9*u,1.2*u,C.chrome);inst(B.cyl,gx,Y,gz,0,2.4*u,1*u,2.4*u,C.chrome2);
@@ -2223,7 +2360,7 @@ function drawCivs(){
     }
     const hgt=tb.lvl>=5?.36:tb.lvl>=3?.13:.08;
     // contaminación: nube parda sobre las metrópolis y las ciudades industriales
-    if(tb.lvl>=7&&tb.kind!=='eco'){
+    if(tb.lvl>=7&&tb.lvl<10&&tb.kind!=='eco'){
       const n=tb.kind==='des'?6:5,R=(SPREAD[tb.kind][1]+tb.lvl*SPREAD[tb.kind][2])*.5*K;
       for(let k=0;k<n;k++){const a=k*2.4+frameN*.002,d=R*(.3+((k*37)%10)/14);
         inst(B.smoke,X+Math.cos(a)*d,Y+(.42+(k%3)*.06),Z+Math.sin(a)*d,0,R*.55,.035,R*.55,C.smog);}
@@ -2249,28 +2386,201 @@ function drawBoats(tb){
       const f=(frameN*.01+k*.3)%1;inst(B.smoke,x,y+(6+f*6)*u,z,0,(1+f*2)*u,(1+f*1.4)*u,(1+f*2)*u,C.smoke);}
   }
 }
-/* Ejército visible en guerra: tanques desde la era industrial y aviones desde la espacial */
+/* Ejército visible en guerra: tanques desde la era industrial; desde la espacial, naves (los aviones
+   ya son reliquias) que disparan rayos; en la sintética los tanques flotan */
+const _ZAX=new THREE.Vector3(0,0,1),_XAX=new THREE.Vector3(1,0,0),_Q3=new THREE.Quaternion();
+function saucer(x,y,z,s,tc,spin){            // platillo: disco, cúpula, luces que giran y brillo debajo
+  inst(B.cyl,x,y,z,0,s,s*.12,s,C.saucer);
+  inst(B.dome,x,y+s*.12,z,0,s*.45,s*.32,s*.45,C.cyan);
+  inst(B.cone,x,y-s*.1,z,0,s*.55,s*.1,s*.55,scaleRGB(C.saucer,.7));
+  for(let k=0;k<4;k++){const a=spin+k*1.571;inst(P.glow,x+Math.cos(a)*s*.92,y+s*.06,z+Math.sin(a)*s*.92,0,s*.09,s*.09,s*.09,k%2?tc:C.light);}
+  inst(P.halo,x,y-s*.15,z,0,s*.7,s*.25,s*.7,scaleRGB(C.cyan,.45));
+}
+function starship(x,y,z,s,hd,tc){             // nave alargada con alas y motores encendidos
+  const ca=Math.cos(-hd),sa=Math.sin(-hd);
+  inst(B.box,x,y,z,hd,s*1.6,s*.22,s*.34,C.saucer);
+  inst(B.box,x-ca*s*.2,y,z-sa*s*.2,hd,s*.7,s*.06,s*1.5,scaleRGB(C.saucer,.8));
+  inst(B.box,x+ca*s*.5,y+s*.18,z+sa*s*.5,hd,s*.4,s*.12,s*.24,C.cyan);
+  inst(B.box,x-ca*s*.6,y+s*.22,z-sa*s*.6,hd,s*.3,s*.3,s*.05,tc);
+  inst(P.halo,x-ca*s*.95,y+s*.1,z-sa*s*.95,0,s*.22,s*.18,s*.22,C.flame);
+}
 function drawArmy(tb,X,Y,Z){
   const en=S.tribes[tb.war];if(!en||regionOf(en.hx,en.hy)!==regionOf(tb.hx,tb.hy)||tb.lvl<7)return;
   const q=P3(en.hx,en.hy),EX=q.x,EZ=q.z,dx=EX-X,dz=EZ-Z,dl=Math.hypot(dx,dz)||1,ux=dx/dl,uz=dz/dl,ang=Math.atan2(dz,dx),u=K*BSCALE;
-  const tc=rgb(tb.col),n=2+(tb.arms||0);
+  const tc=rgb(tb.col),n=2+(tb.arms||0),hover=tb.lvl>=10;
   for(let k=0;k<n;k++){
     const ph=(frameN*.0015+k*.29+tb.id*.13)%2,pp=ph<1?ph:2-ph,f=.12+.42*pp,side=(k-(n-1)/2)*9*u;
     const tx=X+dx*f-uz*side,tz=Z+dz*f+ux*side,rot=-(ang+(ph<1?0:Math.PI));
+    if(hover){   // tanque flotante sintético
+      const ty=Y+(2.5+Math.sin(frameN*.05+k)*.4)*u;
+      inst(B.box,tx,ty,tz,rot,6.5*u,1.6*u,4.6*u,C.obsid);inst(B.box,tx,ty+1.6*u,tz,-ang,3*u,1.2*u,3*u,scaleRGB(C.obsid,1.4));
+      inst(B.win,tx+ux*3*u,ty+2.2*u,tz+uz*3*u,-ang,5*u,.3*u,.3*u,C.cyan);
+      inst(P.halo,tx,ty-.4*u,tz,0,4*u,.8*u,4*u,scaleRGB(C.cyan,.5));
+      continue;
+    }
     inst(B.box,tx,Y,tz,rot,7*u,1.6*u,5*u,C.tread);
     inst(B.box,tx,Y+1.6*u,tz,rot,6*u,1.8*u,4.2*u,C.tank);
     inst(B.box,tx,Y+3.4*u,tz,-ang,3*u,1.4*u,3*u,scaleRGB(C.tank,.85));
     inst(B.box,tx+ux*3*u,Y+4*u,tz+uz*3*u,-ang,5*u,.6*u,.6*u,C.tread);
     inst(B.box,tx,Y+4.8*u,tz,-ang,.8*u,.4*u,.8*u,tc);
   }
-  if(tb.lvl>=9){
+  if(tb.lvl>=9){   // naves de combate rodeando al enemigo, con rayos de vez en cuando
     for(let k=0;k<2;k++){
       const a=frameN*.012+k*Math.PI+tb.id,R=.22,px=EX+Math.cos(a)*R,pz=EZ+Math.sin(a)*R,py=Y+.42+k*.05,hd=-(a+Math.PI/2);
-      inst(B.box,px,py,pz,hd,9*u,1.4*u,1.4*u,C.plane);
-      inst(B.box,px,py+.3*u,pz,hd,2.6*u,.3*u,10*u,C.plane);
-      inst(B.box,px-Math.cos(-hd)*4*u,py+.3*u,pz-Math.sin(-hd)*4*u,hd,1.4*u,2.2*u,.3*u,tc);
+      if(k===0)saucer(px,py,pz,.035,tc,frameN*.08);else starship(px,py,pz,.03,hd,tc);
+      if((frameN+k*37+tb.id*11)%70<7){   // rayo hacia el suelo enemigo
+        _a3.set(px,py,pz);_b3.set(EX+Math.cos(a*3)*.06,Y,EZ+Math.sin(a*3)*.06);_d3.copy(_b3).sub(_a3);const L=_d3.length();_d3.normalize();
+        _Q.setFromUnitVectors(_UP,_d3);instQ(B.flame,px,py,pz,_Q,.004,L,.004,k?C.cyan:C.spark);
+        inst(P.halo,_b3.x,_b3.y+.01,_b3.z,0,.02,.012,.02,C.flame);
+      }
     }
   }
+}
+/* 🛸 Tráfico por el techo del laboratorio: naves que van y vienen entre las ciudades de la era espacial */
+const SKY_Y=FY+ROOM_H-.55;
+const _sa=new THREE.Vector3(),_sb=new THREE.Vector3();
+function drawSky(){
+  const adv=[];for(const id in S.tribes){const tb=S.tribes[id];if(tb.lvl>=9&&tb.n>0)adv.push(tb);}
+  if(adv.length<2)return;
+  const n=Math.min(adv.length,8),pairs=n===2?1:n;
+  for(let i=0;i<pairs;i++){
+    const A=adv[i],Bt=adv[(i+1)%n];
+    let q=P3(A.hx,A.hy);_sa.set(q.x,q.y,q.z);q=P3(Bt.hx,Bt.hy);_sb.set(q.x,q.y,q.z);
+    for(let k=0;k<(n<4?2:1);k++){
+      const cyc=(frameN*.00035+i*.37+k*.5)%2,back=cyc>1,t=back?cyc-1:cyc,from=back?_sb:_sa,to=back?_sa:_sb;
+      const e=t*t*(3-2*t),rise=Math.min(1,t/.18,(1-t)/.18),r2=rise*rise*(3-2*rise);
+      const x=from.x+(to.x-from.x)*e,z=from.z+(to.z-from.z)*e,y=from.y+(to.y-from.y)*e+(SKY_Y-Math.max(from.y,to.y))*r2+.08;
+      const hd=-Math.atan2(to.z-from.z,to.x-from.x),tc=rgb((back?Bt:A).col);
+      if((i+k)%2)saucer(x,y,z,.06,tc,frameN*.06+i);else starship(x,y,z,.07,hd,tc);
+      if(r2<.6)inst(P.halo,x,y-.05,z,0,.05,.08,.05,scaleRGB(C.flame,.6));   // propulsores al despegar y aterrizar
+    }
+  }
+}
+
+/* 🌉 Puentes colgantes y tubos de cristal entre ciudades */
+const _la=new THREE.Vector3(),_lb=new THREE.Vector3(),_lp=new THREE.Vector3(),_lq=new THREE.Vector3(),_lt=new THREE.Vector3();
+const cityR=tb=>tb.wr?tb.wr+6:(SPREAD[tb.kind][1]+tb.lvl*SPREAD[tb.kind][2])*.55;
+function groundY(x,z){for(const r of REGIONS)if(x>=r.ox&&x<=r.ox+r.w*K&&z>=r.oz&&z<=r.oz+r.h*K)return r.oy;return FY;}
+function linkEnds(l){   // extremos del camino, en el borde de cada ciudad mirando a la otra
+  const a=S.tribes[l.a],b=S.tribes[l.b];if(!a||!b)return 0;
+  let q=P3(a.hx,a.hy);_la.set(q.x,q.y,q.z);q=P3(b.hx,b.hy);_lb.set(q.x,q.y,q.z);
+  const dx=_lb.x-_la.x,dz=_lb.z-_la.z,d=Math.hypot(dx,dz)||1,ra=Math.min(cityR(a)*K,d*.35),rb=Math.min(cityR(b)*K,d*.35);
+  _la.x+=dx/d*ra;_la.z+=dz/d*ra;_lb.x-=dx/d*rb;_lb.z-=dz/d*rb;
+  const h=l.k==='tubo'?.09:.1;_la.y+=h;_lb.y+=h;
+  return _la.distanceTo(_lb);
+}
+function linkPt(l,len,u,out){   // punto del tablero o del tubo (u = 0..1): el puente cuelga; el tubo hace un arco
+  out.lerpVectors(_la,_lb,u);
+  const w=Math.sin(Math.PI*u);
+  out.y+=l.k==='tubo'?w*Math.min(.6,.12*len):-w*Math.min(.04,.025*len);
+  return out;
+}
+function figure(x,y,z,rot,s,col,ph){   // personaje diminuto (viajero o constructor)
+  const sw=Math.sin(ph)*.25*s,ca=Math.cos(-rot),sa=Math.sin(-rot);
+  for(const sd of [-1,1])inst(P.box,x+ca*sw*sd-sa*.07*s*sd,y+.2*s,z+sa*sw*sd+ca*.07*s*sd,rot,.09*s,.4*s,.09*s,C.pants);
+  inst(P.box,x,y+.58*s,z,rot,.14*s,.36*s,.26*s,col);
+  inst(P.head,x,y+.88*s,z,rot,.12*s,.13*s,.12*s,C.skinP);
+}
+function drawLinks(){
+  for(const l of S.links){
+    const len=linkEnds(l);if(!len)continue;
+    const a=S.tribes[l.a],b=S.tribes[l.b],tube=l.k==='tubo',p=l.p;
+    const N=clamp(Math.round(len/(tube?.055:.024)),10,tube?70:110);
+    const built=u=>p>=1||u<p/2||u>1-p/2;
+    if(!tube){
+      // torres en los extremos y, en los tramos largos, torres intermedias apoyadas en el suelo
+      const spans=Math.max(1,Math.round(len/1.1)),W=.011;
+      for(let j=0;j<=spans;j++){const u=j/spans;if(!built(u))continue;linkPt(l,len,u,_lp);const gy=groundY(_lp.x,_lp.z);
+        for(const sd of [-1,1]){_lt.set(_lb.z-_la.z,0,_la.x-_lb.x).normalize().multiplyScalar(W*sd);
+          inst(B.box,_lp.x+_lt.x,gy,_lp.z+_lt.z,0,.004,_lp.y-gy+.05,.004,C.trunk);}}
+      for(let i=0;i<N;i++){
+        const u=(i+.5)/N;if(!built(u))continue;
+        linkPt(l,len,i/N,_lp);linkPt(l,len,(i+1)/N,_lq);const sl=_lp.distanceTo(_lq);
+        _lt.copy(_lq).sub(_lp).normalize();_Q.setFromUnitVectors(_XAX,_lt);
+        const mx=(_lp.x+_lq.x)/2,my=(_lp.y+_lq.y)/2,mz=(_lp.z+_lq.z)/2;
+        instQ(LK.plank,mx,my,mz,_Q,sl*.85,.0025,W*2,i%3?C.plankC:scaleRGB(C.plankC,.8));   // tablones
+        // cuerdas: de torre a torre, con su curva, y tirantes al tablero
+        const su=u*spans%1,cy=my+.008+.04*(2*su-1)**2;
+        _lt.set(_lb.z-_la.z,0,_la.x-_lb.x).normalize();
+        for(const sd of [-1,1]){inst(LK.plank,mx+_lt.x*W*sd,cy,mz+_lt.z*W*sd,-Math.atan2(_lb.z-_la.z,_lb.x-_la.x),sl,.0012,.0012,C.rope);
+          if(i%3===0)inst(LK.plank,mx+_lt.x*W*sd,my+(cy-my)/2,mz+_lt.z*W*sd,0,.0008,cy-my,.0008,C.rope);}
+      }
+      // viajeros que cruzan (y los que se mudan de verdad)
+      if(p>=1)for(let k=0;k<2;k++){const u=(frameN*.0007*(k?1:-1)+k*.5+5)%1;linkPt(l,len,u,_lp);
+        figure(_lp.x,_lp.y+.002,_lp.z,-Math.atan2(_lb.z-_la.z,_lb.x-_la.x)+(k?0:Math.PI),.028,rgb((k?a:b).col),frameN*.25+k);}
+    }else{
+      const R=.013;
+      for(let i=0;i<N;i++){
+        const u=(i+.5)/N;if(!built(u))continue;
+        linkPt(l,len,i/N,_lp);linkPt(l,len,(i+1)/N,_lq);const sl=_lp.distanceTo(_lq);
+        _lt.copy(_lq).sub(_lp).normalize();_Q.setFromUnitVectors(_UP,_lt);
+        instQ(LK.tube,_lp.x,_lp.y,_lp.z,_Q,R,sl,R,C.crystal);
+        if(i%4===0){instQ(P.ring,_lp.x,_lp.y,_lp.z,_Q,R*1.15,.5,R*1.15,C.chrome);
+          const gy=groundY(_lp.x,_lp.z);if(i%8===0&&_lp.y-gy>.04)inst(B.cyl,_lp.x,gy,_lp.z,0,.003,_lp.y-gy-R,.003,C.chrome2);}   // pilares
+      }
+      if(p>=1)for(let k=0;k<3;k++){const u=(frameN*.0025*(k%2?1:-1)+k/3+5)%1;linkPt(l,len,u,_lp);   // cápsulas
+        inst(P.glow,_lp.x,_lp.y,_lp.z,0,.007,.007,.007,k%2?C.pod:C.cyan);}
+    }
+    // constructores trabajando en los dos frentes de obra
+    if(p<1)for(const u of [p/2,1-p/2]){linkPt(l,len,u,_lp);figure(_lp.x,_lp.y+.002,_lp.z,frameN*.02,.026,C.helmet,frameN*.4);
+      if(frameN%12<6)inst(P.glow,_lp.x,_lp.y+.01,_lp.z,0,.004,.004,.004,tube?C.cyan:C.fire);}
+  }
+  // los que se están mudando de ciudad, sobre su puente o dentro de su tubo
+  for(const k of S.treks){
+    const l=S.links.find(l=>(l.a===k.from&&l.b===k.to)||(l.a===k.to&&l.b===k.from));if(!l||l.p<1)continue;
+    const len=linkEnds(l);if(!len)continue;
+    const f=k.t/k.dur,u=l.a===k.from?f:1-f;linkPt(l,len,u,_lp);
+    const tb=S.tribes[k.from];
+    if(l.k==='tubo')inst(P.glow,_lp.x,_lp.y,_lp.z,0,.009,.009,.009,tb?rgb(tb.col):C.pod);
+    else figure(_lp.x,_lp.y+.002,_lp.z,-Math.atan2(_lb.z-_la.z,_lb.x-_la.x)+(l.a===k.from?0:Math.PI),.03,tb?rgb(tb.col):C.white,frameN*.25);
+  }
+}
+
+/* 💀 Los que mueren no desaparecen de golpe: caen, se quedan un momento y se hunden en el suelo.
+   Los caídos en guerra dejan una lápida un rato; los sintéticos se deshacen en chispas. */
+const corpses=[];
+hooks.dead=c=>{
+  if(busy||jump||c.onShip||c.cause==='devorado')return;
+  const st=stageOf(c),tb=c.tribe&&S.tribes[c.tribe],lk=tb&&tb.look;
+  const kid=st>=4?clamp(.6+.4*c.age/500,.6,1):1;
+  const u=Math.max(2.4,sz(c)*1.9)*S.vis*(st>=4?1.6*kid:st===0?1.35:1)*K;
+  const war=/guerra|bombard/.test(c.cause||'');
+  if(corpses.length>=140)corpses.shift();
+  corpses.push({x:c.x,y:c.y,a:c.va??c.dir,st,u,t:0,war,
+    body:c.zombie?COL.z:st>=5&&tb?rgb(tb.col):c.herd?C.cow:COL[c.type],skin:lk?rgb(lk.skin):C.skinP,legs:lk?rgb(lk.pants):C.pants});
+};
+function drawCorpses(dt){
+  for(const d of corpses){
+    d.t+=Math.min(dt,.1);
+    const q=P3(d.x,d.y),X=q.x,Z=q.z,Y0=q.y+(hills.length?hillY(d.x,d.y):0),u=d.u,rot=-d.a,ca=Math.cos(d.a),sa=Math.sin(d.a);
+    const lie=d.war?4.5:1.8,end=lie+1.1;
+    const sink=d.t<lie?1:Math.max(0,1-(d.t-lie)/1.1);   // al final se encoge y se hunde
+    if(d.st===6){   // sintético: se desvanece en chispas que suben
+      const f=Math.min(1,d.t/1.4);
+      if(f<1){inst(P.box,X,Y0+.4*u,Z,rot,.15*u*(1-f),.7*u*(1-f),.25*u*(1-f),C.chrome);
+        for(let k=0;k<6;k++){const a=k*1.047+d.x,r=u*(.15+f*.4);inst(P.glow,X+Math.cos(a)*r,Y0+u*(.3+f*1.4+k*.08),Z+Math.sin(a)*r,0,.05*u*(1-f),.05*u*(1-f),.05*u*(1-f),C.cyan);}}
+      d.done=d.t>1.5;continue;
+    }
+    if(d.st>=4){   // humanoide: cae de espaldas
+      const th=Math.min(1,d.t/.45),fall=th*th*1.5708,sy=-(1-sink)*.25*u;
+      _Q.setFromAxisAngle(_UP,rot);_Q2.setFromAxisAngle(_ZAX,fall);_Q3.copy(_Q).multiply(_Q2);
+      const piece=(pl,h,w,hh,dd,col)=>{const f=-h*Math.sin(fall),y=h*Math.cos(fall)+.05*u*Math.sin(fall);
+        instQ(pl,X+ca*f,Y0+y*sink+sy,Z+sa*f,_Q3,w*sink,hh*sink,dd*sink,col);};
+      piece(P.box,.2*u,.12*u,.4*u,.18*u,d.legs);
+      piece(P.box,.58*u,.15*u,.36*u,.28*u,d.body);
+      piece(P.head,.88*u,.12*u,.13*u,.12*u,d.skin);
+      if(d.war&&d.t>.6){   // lápida o cruz donde cayó
+        const g=Math.min(1,(d.t-.6)/.4)*sink,gx=X-ca*1.2*u,gz=Z-sa*1.2*u;
+        inst(P.box,gx,Y0+.22*u*g,gz,rot,.05*u*g,.44*u*g,.06*u*g,C.grave);
+        inst(P.box,gx,Y0+.32*u*g,gz,rot,.05*u*g,.06*u*g,.24*u*g,C.grave);
+      }
+    }else{          // animales y células: se tumban de lado
+      const f=Math.min(1,d.t/.4);
+      inst(P.body,X,Y0+.2*u*(1-f*.5)*sink,Z,rot,.42*u*sink,(.25-.1*f)*u*sink,.34*u*sink,scaleRGB(d.body,1-.4*f));
+    }
+    d.done=d.t>end;
+  }
+  if(corpses.some(d=>d.done))for(let i=corpses.length-1;i>=0;i--)if(corpses[i].done)corpses.splice(i,1);
 }
 /* Cohetes en vuelo: trayectoria en arco entre dos tierras */
 const _a3=new THREE.Vector3(),_b3=new THREE.Vector3(),_d3=new THREE.Vector3();
@@ -2369,8 +2679,12 @@ function render3D(dt){
   if(wallsDirty&&frameN-lastWalls>6)rebuildWalls();
 
   if(frameN%2===0||P.plant.mesh.count===0)drawPlants();else P.plant.n=-1;
+  updateCamL();
   drawCreatures();
+  drawCorpses(dt);
   drawCivs();
+  drawLinks();
+  drawSky();
   drawShips();
   drawDisasters(dt);
   updateDayNight();
@@ -3237,12 +3551,13 @@ function load(){
     const d=JSON.parse(raw);if(d.v!==2)return false;
     S=d.S;S.vis??=1.6;S.cap??=1500;S.ships??=[];S.ruins??=[];
     S.fires??=[];S.floods??=[];S.swarms??=[];S.shots??=[];S.plagueSeq??=0;S.sickN??=0;S.vStrain??=1;S.evo??=1;
-    S.lakes??=[];S.wild??=[];S.meteors??=[];S.daynight??=true;
+    S.lakes??=[];S.wild??=[];S.meteors??=[];S.daynight??=true;S.links??=[];S.treks??=[];
     wallT.set(d.wt);wallHP.set(d.wh);for(let i=0;i<wallT.length;i++)if(wallT[i]===VOID)wallHP[i]=WALL_HP[VOID];
     S.creatures=S.creatures.map(o=>Object.assign(blankC(),o,{held:false}));
     for(const sh of S.ships)sh.crew=sh.crew.map(o=>Object.assign(blankC(),o));
+    for(const k of S.treks)k.c=Object.assign(blankC(),k.c);
     for(const id in S.tribes){const tb=S.tribes[id];tb.kind??='tec';tb.buildings??=[];tb.trees??=[];tb.lastShip??=S.tick;tb.arms??=0;tb.cures??=[];tb.cureProg??={};tb.look??=makeLook(tb.type);tb.threat??=-1e9;tb.def??=1;tb.wr??=0;tb.sc??=0;tb.watch??=0;}
-    zonesDirty=true;computeZones();rebuildWater();wallsDirty=true;return true;
+    zonesDirty=true;computeZones();rebuildWater();rebuildFoot();wallsDirty=true;return true;
   }catch(e){S=null;return false;}
 }
 document.addEventListener('visibilitychange',()=>{if(document.hidden)save();});
