@@ -174,7 +174,7 @@ function blankC(){
   return {id:0,type:'p',sex:'f',x:0,y:0,dir:0,age:0,energy:0,maxAge:0,gen:0,g:null,mut:null,gm:1,preg:0,
     mateG:null,mateM:null,mateGen:0,mateImm:false,mateILv:0,cd:0,rest:0,zombie:0,inc:0,zAge:0,tribe:0,herd:0,
     warrior:false,mig:null,immune:false,iLv:0,strain:0,rage:0,rx:0,ry:0,z:0,dead:false,held:false,sick:0,plague:0,
-    pImm:null,cause:null,diedAt:0,regenAt:-1e9,onShip:false,px:0,py:0,va:0,spawnF:-1};
+    pImm:null,cause:null,diedAt:0,regenAt:-1e9,onShip:false,px:0,py:0,va:0,spawnF:-1,scout:0,scx:0,scy:0};
 }
 function mkC(type,sex,x,y,g,gen,energy){
   const c=blankC();
@@ -418,6 +418,12 @@ function step(){
     }
     else if(c.rage>0){c.rage--;tx=c.rx;ty=c.ry;if((c.x-tx)**2+(c.y-ty)**2<40)c.rage=0;}
     else if(cor&&(c.x-cor.x)**2+(c.y-cor.y)**2>cor.r*cor.r){tx=cor.x;ty=cor.y;}
+    else if(c.scout>0&&!hungry&&tb){
+      c.scout--;
+      if(c.scout%260<36)mv=0;                  // se para un rato a otear el paisaje
+      else{tx=c.scx;ty=c.scy;mv*=0.42;}         // paso lento, de caminante
+      if((c.x-c.scx)**2+(c.y-c.scy)**2<64){scoutFind(c,tb);if(!scoutGoal(c,tb,false))c.scout=0;}
+    }
     else if(mate&&!hungry){tx=mate.x;ty=mate.y;}
     else if(food){tx=food.x;ty=food.y;}
     else if(tb&&(c.x-tb.hx)**2+(c.y-tb.hy)**2>tb.r2){tx=tb.hx;ty=tb.hy;}
@@ -430,7 +436,7 @@ function step(){
       const reach=s+2.5;
       if((foe.x-c.x)**2+(foe.y-c.y)**2<reach*reach){
         const ft=civOf(foe),home=ft&&(foe.x-ft.hx)**2+(foe.y-ft.hy)**2<ft.r2;
-        const a=power(c),b=power(foe)*(home?1.3:1);
+        const a=power(c)*(inWalls(tb,c)?tb.def:1),b=power(foe)*(home?1.3:1)*(inWalls(ft,foe)?ft.def:1);
         const loser=a>=b?foe:c,winner=loser===c?foe:c,lt=civOf(winner);
         kill(loser,'caído en la guerra'+(lt?' contra los '+lt.name:''));hooks.event('fight',loser);
         if(loser.dead){pop--;if(winner.type==='d')winner.energy+=8*sz(loser)**2;if(loser===c)continue;}
@@ -500,18 +506,18 @@ function newTribe(type,x,y,kind,look){
   const k=kind||(nearWater(x,y,55)&&Math.random()<0.75?'mar':pick(['tec','tec','eco','eco','des','des','tec']));
   return S.tribes[id]={id,name:tribeName(),type,kind:k,hx:x,hy:y,born:S.tick,n:0,e:0,iq:0,built:0,R:7,col:TCOL[id%TCOL.length],r2:(7*T+4)**2,
     know:0,lvl:1,farms:[],corral:null,herd:0,war:0,warSince:0,wins:0,parent:0,lastCol:S.tick,lastShip:S.tick,buildings:[],trees:[],
-    arms:0,cures:[],cureProg:{},look:makeLook(type,look)};
+    arms:0,cures:[],cureProg:{},look:makeLook(type,look),threat:-1e9,def:1,wr:0,sc:0,watch:0};
 }
 
 /* ---- Pueblos: qué construyen según su era y su carácter ---- */
 const BSCALE=1.5;   // los edificios se dibujan y se separan a esta escala (en proporción a los humanos)
 const BSIZE={choza:6,casa:9,granja:12,molino:7,iglesia:13,torre:7,fabrica:13,rascacielos:10,aerogenerador:6,panel:7,bunker:10,cohete:12,biocupula:18,
   pozo:4,mercado:10,cuartel:11,bomberos:10,hospital:11,universidad:13,parque:12,canon:6,antena:5,bloque:9,invernadero:12,
-  muelle:7,palafito:7,faro:6,astillero:12};
+  muelle:7,palafito:7,faro:6,astillero:12,muralla:3,atalaya:6,fortaleza:22,escudo:3,datos:8,esfera:10,colmena:11};
 /* Altura aproximada (en unidades, antes de BSCALE): para saber si la mano "toca" un edificio */
 const BHEIGHT={choza:7,casa:11,granja:13,molino:16,iglesia:25,torre:32,fabrica:20,rascacielos:56,aerogenerador:32,panel:3,bunker:6,cohete:22,biocupula:10,
   pozo:6,mercado:7,cuartel:9,bomberos:14,hospital:12,universidad:16,parque:4,canon:5,antena:30,bloque:26,invernadero:7,
-  muelle:3,palafito:10,faro:26,astillero:12};
+  muelle:3,palafito:10,faro:26,astillero:12,muralla:7,atalaya:20,fortaleza:24,escudo:0,datos:50,esfera:20,colmena:16};
 /* Cada tipo de sociedad construye su propia ciudad:
    🔬 tecnológica → metrópolis tipo Nueva York: bloques y muchos rascacielos, asfalto y contaminación
    🌳 ecologista  → campo: casitas dispersas, granjas, molinos, invernaderos, bosques y energía limpia
@@ -520,12 +526,12 @@ function quota(tb,k){
   const L=tb.lvl,K2=tb.kind;
   switch(k){
     case 'muelle':return K2==='mar'&&L>=3?Math.min(3,1+Math.floor((L-3)/3)):0;
-    case 'palafito':return K2==='mar'&&L>=3?Math.min(14,3+Math.floor(L*1.4)):0;
+    case 'palafito':return K2==='mar'&&L>=3&&L<10?Math.min(14,3+Math.floor(L*1.4)):0;
     case 'faro':return K2==='mar'&&L>=6?1:0;
     case 'astillero':return K2==='mar'&&L>=7?1:0;
     case 'pozo':return L>=3&&K2!=='mar'?1:0;
     case 'choza':return L>=3&&L<6&&K2!=='mar'?(K2==='eco'?8:6):0;
-    case 'casa':return L>=5?(K2==='mar'?3:K2==='eco'?Math.min(24,5+(L-5)*4+Math.floor(tb.n/10)):K2==='tec'?(L>=7?4:8):Math.min(10,3+(L-5)*2)):0;
+    case 'casa':return L>=5&&L<10?(K2==='mar'?3:K2==='eco'?Math.min(24,5+(L-5)*4+Math.floor(tb.n/10)):K2==='tec'?(L>=7?4:8):Math.min(10,3+(L-5)*2)):0;
     case 'torre':return L>=5?1:0;
     case 'mercado':return L>=5?(L>=7?2:1):0;
     case 'granja':return L>=6?(K2==='eco'?5:tb.type==='d'?2:1):0;
@@ -535,24 +541,33 @@ function quota(tb,k){
     case 'canon':return L>=6&&(tb.war||K2==='des')?(K2==='des'?4:2):0;
     case 'bomberos':return L>=7?(K2==='eco'?2:1):0;
     case 'hospital':return tb.cures.length?(K2==='tec'?2:1):0;
-    case 'bloque':return L>=6?(K2==='tec'?Math.min(14,(L-5)*4):K2==='des'?4:0):0;
+    case 'bloque':return L>=6&&L<10?(K2==='tec'?Math.min(14,(L-5)*4):K2==='des'?4:0):0;
     case 'fabrica':return L>=7?(K2==='tec'?2:K2==='des'?5:0):0;
     case 'invernadero':return L>=7&&K2==='eco'?4:0;
     case 'universidad':return L>=7&&K2==='tec'?1:L>=8&&K2==='eco'?1:0;
     case 'aerogenerador':return L>=7?(K2==='eco'?6:K2==='tec'?1:0):0;
     case 'bunker':return L>=7&&K2==='des'?5:0;
-    case 'rascacielos':return L>=7?(K2==='tec'?Math.min(18,(L-6)*6):K2==='des'&&L>=8?3:0):0;
+    case 'rascacielos':return L>=7&&L<10?(K2==='tec'?Math.min(18,(L-6)*6):K2==='des'&&L>=8?3:0):0;
     case 'panel':return L>=8?(K2==='eco'?6:K2==='tec'?2:0):0;
     case 'parque':return L>=7?(K2==='eco'?3:K2==='tec'&&L>=8?1:0):0;
     case 'antena':return L>=8&&K2==='tec'?2:0;
     case 'cohete':return L>=9?1:0;
     case 'biocupula':return L>=10?2:0;
+    // 🛡️ defensas: solo cuando se sienten amenazados (los destructores, siempre)
+    case 'muralla':return L>=4&&(threatened(tb)||(K2==='des'&&L>=6))?1:0;
+    case 'atalaya':return L>=4&&(threatened(tb)||K2==='des')?Math.min(4,L-2):0;
+    case 'fortaleza':return L>=5&&(threatened(tb)||K2==='des')?1:0;
+    case 'escudo':return L>=8&&threatened(tb)?1:0;
+    // ✨ era sintética: ya no hay casas, sino hábitats para la vida sintética
+    case 'datos':return L>=10?(K2==='tec'?6:K2==='des'?3:2):0;
+    case 'esfera':return L>=10?(K2==='eco'||K2==='mar'?6:K2==='tec'?4:0):0;
+    case 'colmena':return L>=10?(K2==='des'?5:K2==='mar'?2:3):0;
   }
   return 0;
 }
 const WATER_B={muelle:4,palafito:12,faro:6,astillero:6};   // necesitan agua a esta distancia
-const BORDER=['torre','muelle','palafito','faro','astillero','pozo','choza','casa','mercado','granja','molino','iglesia','cuartel','canon','bomberos','hospital','bloque','rascacielos','fabrica',
-  'invernadero','universidad','aerogenerador','bunker','panel','parque','antena','cohete','biocupula'];
+const BORDER=['torre','muralla','atalaya','fortaleza','escudo','muelle','palafito','faro','astillero','pozo','choza','casa','mercado','granja','molino','iglesia','cuartel','canon','bomberos','hospital','bloque','rascacielos','fabrica',
+  'invernadero','universidad','aerogenerador','bunker','panel','parque','antena','cohete','biocupula','datos','esfera','colmena'];
 /* distancia a la plaza a la que construye cada estilo: la metrópolis, apiñada; el campo, disperso */
 const SPREAD={tec:[12,22,8],eco:[20,48,16],des:[14,30,11],mar:[12,44,14]};
 const hasB=(tb,k)=>tb.buildings.some(b=>b.k===k);
@@ -574,7 +589,13 @@ function growTown(tb){
   let built=0;
   // renovación urbana: al modernizarse se derriban las chozas y, en la metrópolis, las casas que sobran
   if(tb.lvl>=7){const i=tb.buildings.findIndex(b=>b.k==='choza');if(i>=0){tb.buildings.splice(i,1);roadsDirty=true;}}
-  if(tb.kind==='tec'&&tb.lvl>=7&&tb.buildings.filter(b=>b.k==='casa').length>quota(tb,'casa')){
+  // era sintética: las viviendas se transforman, una a una, en hábitats de vida sintética
+  if(tb.lvl>=10)for(let n=0;n<(tb.kind==='tec'?2:1);n++){
+    const b=tb.buildings.find(b=>HOUSES.has(b.k));if(!b)break;
+    b.from=b.k;b.k=synthFor(tb,b);b.mt=S.tick;b.hp=BSIZE[b.k];roadsDirty=true;
+    if(!tb.synth){tb.synth=1;hooks.event('synth',tb);}
+  }
+  if(tb.kind==='tec'&&tb.lvl>=7&&tb.lvl<10&&tb.buildings.filter(b=>b.k==='casa').length>quota(tb,'casa')){
     const i=tb.buildings.findIndex(b=>b.k==='casa');if(i>=0){tb.buildings.splice(i,1);roadsDirty=true;}}
   for(const k of BORDER){
     if(built>=(tb.kind==='tec'?2:1))break;
@@ -582,10 +603,17 @@ function growTown(tb){
     if(have>=quota(tb,k))continue;
     tb.fail=tb.fail||{};if(tb.fail[k]&&S.tick-tb.fail[k]<2000)continue;   // si no cupo hace poco, no lo reintenta todavía
     const sp=SPREAD[tb.kind]||SPREAD.tec,near=k==='rascacielos'?.85:k==='bloque'?.7:1;
-    let p=k==='torre'?{x:tb.hx,y:tb.hy,a:0}:placeNear(tb,BSIZE[k],tb.buildings,sp[0]*near,(sp[1]+tb.lvl*sp[2])*near*(WATER_B[k]?1.6:1),WATER_B[k]||0);
+    let p=k==='torre'||k==='escudo'?{x:tb.hx,y:tb.hy,a:0}:k==='muralla'?{x:tb.hx,y:tb.hy,a:rand(0,1.571)}
+      :k==='atalaya'&&wallOf(tb)?placeOnWall(tb,wallOf(tb)):placeNear(tb,BSIZE[k],tb.buildings,sp[0]*near,(sp[1]+tb.lvl*sp[2])*near*(WATER_B[k]?1.6:1),WATER_B[k]||0);
+    // la colina de la fortaleza es grande: la buscan con más empeño y algo más lejos
+    for(let n=0;!p&&k==='fortaleza'&&n<4;n++)p=placeNear(tb,BSIZE[k],tb.buildings,sp[0]+10,(sp[1]+tb.lvl*sp[2])*1.3);
     if(!p){tb.fail[k]=S.tick;continue;}
     if(WATER_B[k]){const w=waterDir(p.x,p.y,WATER_B[k]+8);if(w!==null)p.a=w;}   // mirando al agua
-    if(p){tb.buildings.push({k,x:p.x,y:p.y,a:p.a,hp:BSIZE[k],v:Math.floor(Math.random()*3)});built++;roadsDirty=true;}
+    if(p){const b={k,x:p.x,y:p.y,a:p.a,hp:TOUGH[k]||BSIZE[k],v:Math.floor(Math.random()*3)};
+      if(k==='muralla')b.r=townRadius(tb);
+      if(k==='escudo'){const w=wallOf(tb);b.r=(w?w.r:townRadius(tb))+5;b.e=100;b.hitT=-99;}
+      if(k==='fortaleza')b.prog=0;   // primero hay que excavar y amontonar la tierra
+      tb.buildings.push(b);built++;roadsDirty=true;}
   }
   // árboles: los ecologistas plantan bosques; los demás, algunos
   const treeMax=tb.kind==='eco'?(tb.lvl>=3?10+tb.lvl*5:0):(tb.lvl>=6&&tb.kind==='tec'?4:0);
@@ -611,20 +639,20 @@ function growTown(tb){
 function findBuildingAt(x,y,extra=0){
   let best=null,bd=Infinity;
   for(const id in S.tribes){const tb=S.tribes[id];
-    tb.buildings.forEach((b,i)=>{const r=BSIZE[b.k]*BSCALE*0.55+extra,d=(b.x-x)**2+(b.y-y)**2;if(d<r*r&&d<bd){bd=d;best={tb,i,b};}});}
+    tb.buildings.forEach((b,i)=>{if(RING_B.has(b.k))return;const r=BSIZE[b.k]*BSCALE*0.55+extra,d=(b.x-x)**2+(b.y-y)**2;if(d<r*r&&d<bd){bd=d;best={tb,i,b};}});}
   return best;
 }
 function destroyBuilding(tb,i,cause){
   const b=tb.buildings[i];if(!b)return;
   tb.buildings.splice(i,1);
-  S.ruins.push({k:b.k,x:b.x,y:b.y,a:b.a});if(S.ruins.length>260)S.ruins.splice(0,S.ruins.length-260);
+  if(!RING_B.has(b.k))S.ruins.push({k:b.k,x:b.x,y:b.y,a:b.a});if(S.ruins.length>260)S.ruins.splice(0,S.ruins.length-260);
   roadsDirty=true;
   hooks.event('destroyed',b,{cause,tb});
 }
 /* Lo que alcanza una zona circular: edificios y árboles de todos los pueblos */
 function forBuildingsNear(x,y,r,fn){
   for(const id in S.tribes){const tb=S.tribes[id];if((tb.hx-x)**2+(tb.hy-y)**2>(r+260)**2)continue;
-    for(let i=tb.buildings.length-1;i>=0;i--){const b=tb.buildings[i],rr=r+BSIZE[b.k]*BSCALE*.5;if((b.x-x)**2+(b.y-y)**2<rr*rr)fn(tb,i,b);}}
+    for(let i=tb.buildings.length-1;i>=0;i--){const b=tb.buildings[i];if(RING_B.has(b.k))continue;const rr=r+BSIZE[b.k]*BSCALE*.5;if((b.x-x)**2+(b.y-y)**2<rr*rr)fn(tb,i,b);}}
 }
 function nearbyP(x,y,r,fn){
   const x0=Math.max(0,((x-r)/CELL)|0),x1=Math.min(GW-1,((x+r)/CELL)|0),y0=Math.max(0,((y-r)/CELL)|0),y1=Math.min(GH-1,((y+r)/CELL)|0),r2=r*r;
@@ -632,6 +660,111 @@ function nearbyP(x,y,r,fn){
 }
 const tribeReach=tb=>60+tb.lvl*12;
 const nearTribe=(tb,x,y,extra=0)=>(tb.hx-x)**2+(tb.hy-y)**2<(tribeReach(tb)+extra)**2;
+
+/* ---- 🛡️ Defensas: un pueblo amenazado (guerra, bombardeos, meteoritos, incendios) se protege ----
+   Murallas de piedra con cuatro puertas, atalayas sobre la muralla, una colina excavada con una
+   fortaleza encima y, desde la era moderna, una cúpula-escudo que frena proyectiles y meteoritos. */
+const THREAT_T=9000;                                  // ciclos que dura la sensación de peligro
+const TOUGH={muralla:60,fortaleza:40,atalaya:16};     // aguantan varios impactos
+const RING_B=new Set(['muralla','escudo']);           // anillos alrededor del pueblo, no edificios con planta
+const HILL_R=15;                                      // radio de la colina de la fortaleza
+const threatened=tb=>!!tb.war||S.tick-(tb.threat??-1e9)<THREAT_T;
+function alarm(tb,why){if(!threatened(tb)&&tb.lvl>=4)hooks.event('alarm',tb,{why});tb.threat=S.tick;}
+function alarmNear(x,y,extra,why){for(const id in S.tribes){const tb=S.tribes[id];if(nearTribe(tb,x,y,extra))alarm(tb,why);}}
+const wallOf=tb=>tb.buildings.find(b=>b.k==='muralla');
+const shieldOf=tb=>tb.buildings.find(b=>b.k==='escudo');
+const inWalls=(tb,o)=>tb&&tb.wr>0&&(o.x-tb.hx)**2+(o.y-tb.hy)**2<tb.wr*tb.wr;
+/* radio que abarca el pueblo (para trazar la muralla) */
+function townRadius(tb){
+  let r=26;
+  for(const b of tb.buildings){if(RING_B.has(b.k)||b.k==='atalaya')continue;const d=Math.hypot(b.x-tb.hx,b.y-tb.hy)+BSIZE[b.k]*BSCALE*.6;if(d>r)r=d;}
+  return Math.min(r+6,150);
+}
+/* sitio para una atalaya sobre la muralla (lejos de las puertas y de otras atalayas) */
+function placeOnWall(tb,w){
+  const reg=regionOf(tb.hx,tb.hy);
+  for(let k=0;k<16;k++){
+    const a=rand(0,6.283);let g=((a-w.a)%1.5708+1.5708)%1.5708;g=Math.min(g,1.5708-g);if(g<.3)continue;
+    const x=tb.hx+Math.cos(a)*w.r,y=tb.hy+Math.sin(a)*w.r,i=tIdx(x,y);
+    if(i<0||wallT[i]||waterT[i]||regionOf(x,y)!==reg)continue;
+    if(tb.buildings.some(b=>b.k==='atalaya'&&(b.x-x)**2+(b.y-y)**2<900))continue;
+    return{x,y,a:Math.atan2(tb.hy-y,tb.hx-x)};
+  }
+  return null;
+}
+/* fracción del vuelo (0..1) en la que un proyectil de A a B entra en el círculo (cx, cy, r); 0 si no entra */
+function enterF(ax,ay,bx,by,cx,cy,r){
+  const dx=bx-ax,dy=by-ay,ex=ax-cx,ey=ay-cy,a=dx*dx+dy*dy,b=2*(ex*dx+ey*dy),c=ex*ex+ey*ey-r*r;
+  if(c<=0||a<1e-6)return 0;                           // disparado desde dentro: no lo frena
+  const disc=b*b-4*a*c;if(disc<0)return 0;
+  const f=(-b-Math.sqrt(disc))/(2*a);return f>0&&f<1?f:0;
+}
+/* daña las murallas cuyo anillo pasa cerca de (x, y) */
+function hurtWalls(x,y,r,dmg,cause){
+  let n=0;
+  for(const id in S.tribes){const tb=S.tribes[id];
+    for(let i=tb.buildings.length-1;i>=0;i--){const b=tb.buildings[i];
+      if(b.k!=='muralla'||Math.abs(Math.hypot(x-b.x,y-b.y)-b.r)>r+2)continue;
+      b.hp=(b.hp??TOUGH.muralla)-dmg;n++;
+      const a=Math.atan2(y-b.y,x-b.x);hooks.event('wallHit',{x:b.x+Math.cos(a)*b.r,y:b.y+Math.sin(a)*b.r,k:'atalaya'});
+      if(b.hp<=0)destroyBuilding(tb,i,cause);
+    }}
+  return n;
+}
+/* cada turno social: ¿hay peligro?, la muralla crece con el pueblo, se repara y el escudo se recarga */
+function defendTick(tb,mult){
+  if(tb.war)tb.threat=S.tick;
+  else{const ex=tb.sc?70:25;   // con exploradores fuera, ven venir el fuego desde más lejos
+    for(let i=0;i<S.fires.length;i+=3){const f=S.fires[i];if(nearTribe(tb,f.x,f.y,ex)){alarm(tb,'incendio');break;}}}
+  let w=null,sh=null,watch=0,fort=0;
+  for(const b of tb.buildings){
+    if(b.k==='muralla')w=b;else if(b.k==='escudo')sh=b;else if(b.k==='atalaya')watch++;
+    else if(b.k==='fortaleza'){if((b.prog??1)<1){b.prog=Math.min(1,b.prog+.06*mult);if(b.prog>=1)hooks.event('fortress',tb);}else fort=1;}
+  }
+  if(w){
+    const r=townRadius(tb);
+    if(r>w.r+2){w.r=r;roadsDirty=true;   // el pueblo ha crecido: amplían la muralla y suben las atalayas a ella
+      for(const b of tb.buildings)if(b.k==='atalaya'){const a=Math.atan2(b.y-tb.hy,b.x-tb.hx);b.x=tb.hx+Math.cos(a)*r;b.y=tb.hy+Math.sin(a)*r;}}
+    if(!tb.war)w.hp=Math.min(TOUGH.muralla,(w.hp??TOUGH.muralla)+.6*mult);
+  }
+  if(sh){sh.r=Math.max(sh.r,(w?w.r:townRadius(tb))+5);sh.e=Math.min(100,(sh.e??100)+3*mult);}
+  tb.wr=w?w.r:0;tb.watch=watch;
+  tb.def=1+(w?.35*clamp((w.hp??60)/TOUGH.muralla,0,1):0)+.08*watch+.25*fort;
+}
+
+/* ---- ✨ Era sintética: las viviendas se convierten en hábitats para la vida sintética ---- */
+const HOUSES=new Set(['choza','casa','palafito','bloque','rascacielos']);
+function synthFor(tb,b){
+  if(b.k==='rascacielos'||b.k==='bloque')return b.v===2?'colmena':'datos';
+  if(b.k==='palafito')return 'esfera';
+  if(tb.kind==='des')return b.v?'colmena':'datos';
+  if(tb.kind==='tec')return b.v===1?'colmena':b.v===2?'datos':'esfera';
+  return b.v===2?'colmena':'esfera';
+}
+
+/* ---- 🧭 Exploradores ---- */
+/* elige el siguiente punto del recorrido: el primero lejos de casa; luego, cerca de donde está */
+function scoutGoal(c,tb,first){
+  const reg=regionOf(tb.hx,tb.hy),hz=zoneAt(tb.hx,tb.hy),R=tribeReach(tb)+50;
+  for(let k=0;k<10;k++){
+    const a=rand(0,6.283),fx=first?tb.hx:c.x,fy=first?tb.hy:c.y,d=first?rand(R*.5,R):rand(25,60);
+    const x=fx+Math.cos(a)*d,y=fy+Math.sin(a)*d,i=tIdx(x,y);
+    if(i<0||wallT[i]||zone[i]!==hz||(waterT[i]&&!swims(c))||(x-tb.hx)**2+(y-tb.hy)**2>R*R||regionOf(x,y)!==reg)continue;
+    c.scx=x;c.scy=y;return true;
+  }
+  return false;
+}
+/* al llegar a cada punto aprenden algo; a veces descubren algo que merece contarse */
+function scoutFind(c,tb){
+  tb.know+=2;
+  if(Math.random()>.12)return;
+  let what=null;
+  if(nearWater(c.x,c.y,25))what='un lago';
+  else if(S.ruins.some(r=>(r.x-c.x)**2+(r.y-c.y)**2<900))what='unas ruinas antiguas';
+  else for(const id in S.tribes){const o=S.tribes[id];if(o!==tb&&(o.hx-c.x)**2+(o.hy-c.y)**2<4900){what='el pueblo de los '+o.name;break;}}
+  if(!what&&S.wild.some(t=>(t.x-c.x)**2+(t.y-c.y)**2<400))what='un bosque';
+  if(what){tb.know+=20;hooks.event('scout',tb,{what});}
+}
 
 /* ---- Catástrofes que lanzas tú ---- */
 /* un incendio de verdad: muchos focos de golpe, que viven mucho y se extienden */
@@ -678,7 +811,7 @@ function disasterTick(t){
       // Cuanto más avanzados, más lejos llegan y más rápido actúan (con parque de bomberos, mucho más).
       for(const id in S.tribes){const tb=S.tribes[id];if(tb.lvl<5||!nearTribe(tb,f.x,f.y,tb.lvl>=8?60:20))continue;
         const base=tb.lvl>=8?0.03:tb.lvl>=7?0.016:0.004*(tb.lvl-4);
-        const p=base*(tb.kind==='eco'||tb.kind==='mar'?1.4:1)*(hasB(tb,'bomberos')?2.5:1)*(nearWater(f.x,f.y,40)?1.5:1);
+        const p=base*(tb.kind==='eco'||tb.kind==='mar'?1.4:1)*(hasB(tb,'bomberos')?2.5:1)*(nearWater(f.x,f.y,40)?1.5:1)*(1+.25*(tb.watch||0));
         if(Math.random()<p){f.out=true;hooks.event('fireout',tb,f);break;}}
       for(const fl of S.floods)if((fl.t<380||fl.lvl>0.15)&&(fl.x-f.x)**2+(fl.y-f.y)**2<fl.r*fl.r)f.out=true;
       if(f.t>=f.life)f.out=true;
@@ -744,18 +877,34 @@ function plagueTick(){
 function fireShots(tb,en){
   const n=Math.min(3,tb.lvl-5)*(tb.kind==='des'?2:1)+(tb.arms||0);
   const from=tb.buildings.find(b=>b.k==='canon')||{x:tb.hx,y:tb.hy};
+  const bl=en.buildings.filter(b=>!RING_B.has(b.k)),w=wallOf(en),sh=shieldOf(en);
   for(let k=0;k<n;k++){
-    const tg=en.buildings.length&&Math.random()<0.75?pick(en.buildings):{x:en.hx+rand(-20,20),y:en.hy+rand(-20,20)};
-    const d=Math.hypot(tg.x-from.x,tg.y-from.y);
-    S.shots.push({x0:from.x+rand(-3,3),y0:from.y+rand(-3,3),x1:tg.x+rand(-4,4),y1:tg.y+rand(-4,4),t:-k*12,dur:Math.round(50+d/5),lvl:tb.lvl,from:tb.id,to:en.id});
+    const tg=bl.length&&Math.random()<0.75?pick(bl):{x:en.hx+rand(-20,20),y:en.hy+rand(-20,20)};
+    const x0=from.x+rand(-3,3),y0=from.y+rand(-3,3);let x1=tg.x+rand(-4,4),y1=tg.y+rand(-4,4);
+    // con muralla, parte de los disparos se estrella contra ella
+    if(w&&(x1-en.hx)**2+(y1-en.hy)**2<w.r*w.r&&Math.random()<0.35){const a=Math.atan2(y0-en.hy,x0-en.hx)+rand(-.35,.35);x1=en.hx+Math.cos(a)*w.r;y1=en.hy+Math.sin(a)*w.r;}
+    const d=Math.hypot(x1-x0,y1-y0);
+    S.shots.push({x0,y0,x1,y1,t:-k*12,dur:Math.round(50+d/5),lvl:tb.lvl,from:tb.id,to:en.id,fi:sh?enterF(x0,y0,x1,y1,sh.x,sh.y,sh.r):0});
   }
 }
 function shotTick(){
   for(const s of S.shots){
-    s.t++;if(s.t<s.dur)continue;
+    s.t++;
+    // 🛡️ la cúpula-escudo frena el proyectil en cuanto toca su superficie
+    if(s.fi&&s.t>=s.fi*s.dur){
+      s.fi=0;const en=S.tribes[s.to],sh=en&&shieldOf(en);
+      if(sh&&sh.e>=4){sh.e-=4;sh.hitT=S.tick;s.done=true;hooks.event('shieldHit',s,{f:s.t/s.dur});continue;}
+    }
+    if(s.t<s.dur)continue;
     s.done=true;
     const en=S.tribes[s.to];
-    if(en){const hit=findBuildingAt(s.x1,s.y1,4);if(hit&&hit.tb===en)destroyBuilding(en,hit.i,'bombardeo');}
+    if(en){
+      const hit=findBuildingAt(s.x1,s.y1,4);
+      if(hit&&hit.tb===en){const t0=TOUGH[hit.b.k];   // atalayas y fortalezas aguantan varios impactos
+        if(t0){hit.b.hp=(hit.b.hp??t0)-8;if(hit.b.hp<=0)destroyBuilding(en,hit.i,'bombardeo');else hooks.event('wallHit',hit.b);}
+        else destroyBuilding(en,hit.i,'bombardeo');}
+      hurtWalls(s.x1,s.y1,3,8,'bombardeo');en.threat=S.tick;
+    }
     nearby(s.x1,s.y1,9,o=>{if(!o.dead&&(o.x-s.x1)**2+(o.y-s.y1)**2<81&&Math.random()<0.5)kill(o,'bombardeado');});
     if(s.lvl>=7&&Math.random()<0.35&&!blocked(s.x1,s.y1))S.fires.push({x:s.x1,y:s.y1,t:0,life:100});
     hooks.event('impact',s);
@@ -824,12 +973,28 @@ function plantForest(x,y,n=10,r=24){
 }
 
 /* ---- ☄️ Meteorito: cae del cielo, abre un cráter, incendia y provoca mutaciones ---- */
+const METEOR_H=430;   // altura desde la que cae (en unidades de la simulación)
 function startMeteor(x,y){S.meteors.push({x,y,t:0,dur:70});}
 function meteorTick(){
   for(const m of S.meteors){
-    m.t++;if(m.t<m.dur)continue;m.done=true;
-    const R=30;let hit;
-    while((hit=findBuildingAt(m.x,m.y,R)))destroyBuilding(hit.tb,hit.i,'meteorito');
+    m.t++;
+    // ¿cae sobre una cúpula-escudo? entonces revienta contra ella a la altura de la cúpula
+    if(m.sf===undefined){m.sf=0;m.sid=0;
+      for(const id in S.tribes){const sh=shieldOf(S.tribes[id]);if(!sh)continue;const d2=(m.x-sh.x)**2+(m.y-sh.y)**2;
+        if(d2<sh.r*sh.r){m.hy=.75*sh.r*Math.sqrt(1-d2/(sh.r*sh.r));m.sf=1-m.hy/METEOR_H;m.sid=+id;break;}}}
+    if(m.sid&&m.t>=m.sf*m.dur){
+      const tb=S.tribes[m.sid],sh=tb&&shieldOf(tb);m.sid=0;
+      if(sh&&sh.e>=40){
+        sh.e-=40;sh.hitT=S.tick;m.done=true;alarm(tb,'meteorito');
+        // los fragmentos caen fuera de la cúpula
+        for(let k=0;k<8&&S.fires.length<FIRE_CAP;k++){const a=rand(0,6.283),d=sh.r+rand(4,14),fx=sh.x+Math.cos(a)*d,fy=sh.y+Math.sin(a)*d;if(!blocked(fx,fy))S.fires.push({x:fx,y:fy,t:0,life:rand(200,320)});}
+        hooks.event('shieldMeteor',m,tb);continue;
+      }
+    }
+    if(m.t<m.dur)continue;m.done=true;
+    const R=30;
+    forBuildingsNear(m.x,m.y,R,(tb,i)=>destroyBuilding(tb,i,'meteorito'));
+    hurtWalls(m.x,m.y,R,35,'meteorito');alarmNear(m.x,m.y,150,'meteorito');
     S.wild=S.wild.filter(tr=>(tr.x-m.x)**2+(tr.y-m.y)**2>R*R);
     for(const id in S.tribes){const tb=S.tribes[id];tb.trees=tb.trees.filter(tr=>(tr.x-m.x)**2+(tr.y-m.y)**2>R*R);}
     const tx0=Math.floor(m.x/T),ty0=Math.floor(m.y/T);
@@ -925,12 +1090,12 @@ function shipTick(){
 /* mult > 1: el salto instantáneo agrupa varios turnos sociales en uno (más conocimiento y más obras) */
 function socialTick(mult=1){
   const TB=S.tribes;
-  for(const id in TB){const tb=TB[id];tb.n=0;tb.e=0;tb.iq=0;tb.herd=0;tb.wn=0;tb.sickP={};}
+  for(const id in TB){const tb=TB[id];tb.n=0;tb.e=0;tb.iq=0;tb.herd=0;tb.wn=0;tb.sc=0;tb.sickP={};}
   const cons=[];
   for(const c of S.creatures){
     if(c.dead||c.zombie)continue;
     if(c.herd){const h=TB[c.herd];if(h)h.herd++;else c.herd=0;}
-    if(c.tribe){const tb=TB[c.tribe];if(tb){tb.n++;tb.e+=c.energy;tb.iq+=c.g.intel;if(c.warrior)tb.wn++;if(c.sick)tb.sickP[c.plague]=(tb.sickP[c.plague]||0)+1;}else{c.tribe=0;c.warrior=false;c.mig=null;}}
+    if(c.tribe){const tb=TB[c.tribe];if(tb){tb.n++;tb.e+=c.energy;tb.iq+=c.g.intel;if(c.warrior)tb.wn++;if(c.scout>0)tb.sc++;if(c.sick)tb.sickP[c.plague]=(tb.sickP[c.plague]||0)+1;}else{c.tribe=0;c.warrior=false;c.mig=null;}}
     if(!c.tribe&&!c.herd&&isSmart(c))cons.push(c);
   }
   for(const c of cons){
@@ -950,7 +1115,7 @@ function socialTick(mult=1){
     const tb=TB[id];
     if(tb.n===0){
       // un pueblo extinguido deja ruinas
-      for(const b of tb.buildings)S.ruins.push({k:b.k,x:b.x,y:b.y,a:b.a});
+      for(const b of tb.buildings)if(!RING_B.has(b.k))S.ruins.push({k:b.k,x:b.x,y:b.y,a:b.a});
       if(S.ruins.length>260)S.ruins.splice(0,S.ruins.length-260);
       for(const oid in TB){const o=TB[oid];if(o.war===tb.id){o.war=0;o.wins++;o.know+=150;hooks.event('victory',o,tb);}}
       delete TB[id];continue;
@@ -966,7 +1131,7 @@ function socialTick(mult=1){
     if(!c.tribe||c.zombie)continue;const tb=TB[c.tribe];if(!tb)continue;
     c.energy+=(tb.avg-c.energy)*0.15;
     if(tb.kind==='mar'&&tb.wet)c.energy+=1.2*sz(c)**2;   // los marineros pescan en su lago
-    if(tb.war&&!c.warrior&&!c.mig&&c.age>200&&tb.wn<tb.n*0.5&&Math.random()<0.2){c.warrior=true;tb.wn++;}
+    if(tb.war&&!c.warrior&&!c.mig&&c.age>200&&tb.wn<tb.n*0.5&&Math.random()<0.2){c.warrior=true;c.scout=0;tb.wn++;}
   }
   for(const id in TB){
     const tb=TB[id],hz=zoneAt(tb.hx,tb.hy);
@@ -986,7 +1151,16 @@ function socialTick(mult=1){
       const a=rand(0,6.283),x=tb.hx+Math.cos(a)*tb.R*T*0.5,y=tb.hy+Math.sin(a)*tb.R*T*0.5;
       if(!blocked(x,y)&&zoneAt(x,y)===hz){tb.corral={x,y,r:12};break;}
     }
+    defendTick(tb,mult);
     for(let g=0;g<Math.min(mult,3);g++)growTown(tb);
+    // 🧭 exploradores: salen a recorrer los alrededores a paso tranquilo y luego vuelven
+    if(tb.lvl>=2&&tb.n>=6&&!tb.war&&tb.sc<Math.min(3,1+(tb.lvl>>2))&&Math.random()<0.15*mult){
+      const N=S.creatures.length,st=(Math.random()*N)|0;
+      for(let k=0;k<N;k++){const c=S.creatures[(st+k)%N];
+        if(c.tribe!==tb.id||c.dead||c.zombie||c.warrior||c.mig||c.held||c.scout>0||c.age<250||c.energy<16*sz(c)**2)continue;
+        if(scoutGoal(c,tb,true)){c.scout=1600+((Math.random()*1200)|0);tb.sc++;}
+        break;}
+    }
     // investigar la cura de la peste (desde el Reino; los tecnológicos, más rápido)
     if(tb.lvl>=6)for(const pid in tb.sickP){
       const id=+pid;if(tb.cures.includes(id))continue;
@@ -1092,7 +1266,7 @@ function nextToast(){
   tShow=true;const m=tq.shift();el.textContent=m;el.classList.add('on');showVrToast(m);
   setTimeout(nextToast,2800);
 }
-let lastWallToast=0,lastFireToast=0;
+let lastWallToast=0,lastFireToast=0,lastScoutToast=0;
 hooks.event=(k,a,b)=>{
   if(busy){if(jumpLog)jumpLog[k]=(jumpLog[k]||0)+1;return;}
   if(k==='wall'){if(performance.now()-lastWallToast>8000){lastWallToast=performance.now();toast('Una pared ha cedido. Algo se está escapando.');}return;}
@@ -1103,7 +1277,17 @@ hooks.event=(k,a,b)=>{
   if(k==='victory')toast(`Los ${a.name} han aniquilado a los ${b.name}.`);
   if(k==='peace')toast(`Los ${a.name} y los ${b.name} firman la paz.`);
   if(k==='colony')toast(`Los ${a.name} mandan colonos a fundar una nueva ciudad: los ${b.name}.`);
-  if(k==='destroyed'){spawnDebris(a);return;}
+  if(k==='destroyed'){
+    if(a.k==='muralla'){toast(`🧱 Las murallas de los ${b.tb.name} han caído (${b.cause}).`);return;}
+    if(a.k!=='escudo')spawnDebris(a);return;}
+  if(k==='wallHit'){spawnDebris(a);return;}
+  if(k==='alarm'){toast(`🛡️ Los ${a.name} se sienten amenazados (${b.why}): levantan murallas y atalayas.`);return;}
+  if(k==='fortress'){toast(`⛰️ Los ${a.name} han excavado el suelo para alzar una colina con una fortaleza encima.`);return;}
+  if(k==='shieldHit'){if(fxB.booms.length<80){const v=shotPos(a,b.f,_s3c);fxB.booms.push({x:v.x,y:v.y,z:v.z,t:0,shield:true});}return;}
+  if(k==='shieldMeteor'){const q=P3(a.x,a.y);fxB.booms.push({x:q.x,y:q.y+a.hy*K,z:q.z,t:0,big:true,shield:true});
+    toast(`🛡️ ¡La cúpula-escudo de los ${b.name} ha detenido el meteorito!`);return;}
+  if(k==='synth'){toast(`✨ Los ${a.name} dejan atrás las casas: su vida sintética habita torres de datos, esferas de cristal y colmenas de luz.`);return;}
+  if(k==='scout'){if(performance.now()-lastScoutToast>25000){lastScoutToast=performance.now();toast(`🧭 Los exploradores de los ${a.name} han descubierto ${b.what}.`);}return;}
   if(k==='fight'){if(fxB.booms.length<60){const q=P3(a.x,a.y);fxB.booms.push({x:q.x,y:q.y+.01,z:q.z,t:.3,spark:true});}return;}
   if(k==='impact'){const q=P3(a.x1,a.y1);fxB.booms.push({x:q.x,y:q.y+.01,z:q.z,t:0,big:a.lvl>=9});return;}
   if(k==='fireout'){
@@ -1360,6 +1544,10 @@ function drawBG(){
     if(modern){g.strokeStyle='rgba(240,220,120,.6)';g.lineWidth=.6;g.setLineDash([3,3]);g.beginPath();for(const b of tb.buildings){g.moveTo(tb.hx,tb.hy);g.lineTo(b.x,b.y);}g.stroke();g.setLineDash([]);}
     g.fillStyle=modern?'rgba(90,94,100,.9)':'rgba(176,158,120,.8)';g.beginPath();g.arc(tb.hx,tb.hy,modern?10:7,0,6.283);g.fill();
   }
+  // fosos: la tierra que excavan para levantar la colina de la fortaleza
+  for(const id in S.tribes)for(const b of S.tribes[id].buildings)if(b.k==='fortaleza'){
+    const g=regionOf(b.x,b.y).g;g.fillStyle='rgba(122,92,58,.85)';g.beginPath();g.arc(b.x,b.y,HILL_R+1,0,6.283);g.fill();
+    g.strokeStyle='rgba(58,40,24,.9)';g.lineWidth=4;g.beginPath();g.arc(b.x,b.y,HILL_R+4,0,6.283);g.stroke();}
   // tierra quemada
   for(const r of S.ruins){const g=regionOf(r.x,r.y).g;g.fillStyle='rgba(30,26,22,.35)';g.beginPath();g.arc(r.x,r.y,(BSIZE[r.k]||8)*.7,0,6.283);g.fill();}
   for(const r of REGIONS)r.tex.needsUpdate=true;
@@ -1419,7 +1607,7 @@ const P={
   halo: makePool(new THREE.SphereGeometry(1,10,8),basic({transparent:true,opacity:.35,blending:THREE.AdditiveBlending,depthWrite:false}),2600,dynPools,3),
 };
 const B={
-  box:  makePool(base0(new THREE.BoxGeometry(1,1,1)),flat('#ffffff'),4000),
+  box:  makePool(base0(new THREE.BoxGeometry(1,1,1)),flat('#ffffff'),8000),
   roof: makePool(base0(new THREE.ConeGeometry(1,1,4)),flat('#ffffff'),1500),
   cone: makePool(base0(new THREE.ConeGeometry(1,1,8)),flat('#ffffff'),5000),
   cyl:  makePool(base0(new THREE.CylinderGeometry(1,1,1,8)),flat('#ffffff'),5000),
@@ -1431,6 +1619,11 @@ const B={
   flame:makePool(base0(new THREE.ConeGeometry(1,1,6)),basic({transparent:true,opacity:.9}),1600,dynPools,3),
   water:makePool(base0(new THREE.CylinderGeometry(1,1,1,32)),std({transparent:true,opacity:.5,depthWrite:false,roughness:.1,metalness:.2}),260,dynPools,2),
   sail: makePool(base0(new THREE.ConeGeometry(1,1,3)),std({side:THREE.DoubleSide,roughness:.8}),300),
+  // era sintética y defensas
+  hex:  makePool(base0(new THREE.CylinderGeometry(1,1,1,6)),flat('#ffffff'),1500),
+  hexL: makePool(base0(new THREE.CylinderGeometry(1,1,1,6)),basic(),1500),
+  orb:  makePool(new THREE.SphereGeometry(1,16,10),std({transparent:true,opacity:.35,depthWrite:false,roughness:.05,metalness:.3}),300,dynPools,2),
+  shield:makePool(new THREE.SphereGeometry(1,24,12,0,Math.PI*2,0,Math.PI/2),basic({transparent:true,opacity:.18,blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.DoubleSide}),40,dynPools,3),
 };
 const WP={
   glass:makePool(base0(new THREE.BoxGeometry(1,1,1)),std({transparent:true,opacity:.42,depthWrite:false,roughness:.1,metalness:.1}),4000,wallPools,2),
@@ -1458,6 +1651,8 @@ const C={
   palmTrunk:rgb('#8a6a44'),palm:rgb('#4f9a3a'),willow:rgb('#6f9a4a'),trunk2:rgb('#5a3a30'),cherry:rgb('#f2a6c4'),cherry2:rgb('#f7c4d8'),
   maple:rgb('#d2581e'),maple2:rgb('#e8a02a'),cypress:rgb('#2a4a2e'),baobab:rgb('#9a8064'),lake:rgb('#3a8fc8'),
   pier:rgb('#8a6a48'),hull:rgb('#7a4a2a'),hull2:rgb('#2a3a5a'),sailW:rgb('#f2efe4'),light:rgb('#fff2a0'),splash:rgb('#7ac8ff'),
+  stoneW:rgb('#9a9184'),earth:rgb('#7a5a3a'),pack:rgb('#6a4a2a'),shieldC:rgb('#6ad8ff'),
+  obsid:rgb('#1c2030'),crystal:rgb('#c8f2ff'),hive1:rgb('#ffcf4a'),hive2:rgb('#5ef0ff'),hexBody:rgb('#2a3040'),
 };
 
 let lastWalls=-99;
@@ -1533,6 +1728,8 @@ function showVrToast(m){
 }
 
 /* ---------- Organismos: una forma por etapa de la evolución ---------- */
+const hills=[];   // colinas de las fortalezas (se rellenan al dibujar los pueblos; los seres suben por ellas)
+function hillY(x,y){let h=0;for(const q of hills){const d2=(x-q.x)**2+(y-q.y)**2;if(d2<q.r2){const v=q.h*Math.sqrt(1-d2/q.r2);if(v>h)h=v;}}return h;}
 function drawCreatures(){
   const vis=S.vis,many=S.creatures.length>1300||(renderer.xr.isPresenting&&S.creatures.length>800),blink=frameN%20<10;
   for(const c of S.creatures){
@@ -1542,11 +1739,11 @@ function drawCreatures(){
     const s=Math.max(2.4,sz(c)*1.9)*vis*(st>=4?1.6:st===0?1.35:1),u=s*K;
     let rx=c.x,ry=c.y;
     if(alpha<1&&c.px!==undefined&&!c.held&&Math.abs(c.x-c.px)+Math.abs(c.y-c.py)<20){rx=c.px+(c.x-c.px)*alpha;ry=c.py+(c.y-c.py)*alpha;}
-    const p=P3(rx,ry),X=p.x,Z=p.z,Y0=p.y+(c.held?.06:0);
+    const p=P3(rx,ry),X=p.x,Z=p.z,Y0=p.y+(c.held?.06:0)+(hills.length?hillY(rx,ry):0);
     const zomb=c.zombie||(c.inc>0&&blink);
     let col=zomb?COL.z:c.immune&&st<5?COL.i:c.herd?C.cow:COL[c.type];
     if(c.sick&&!zomb)col=[...lerpRGB(col,C.sick,.6)];
-    const ph=frameN*.3+c.id,sw=Math.sin(ph);
+    const ph=frameN*(c.scout>0?.13:.3)+c.id,sw=Math.sin(ph);   // los exploradores caminan despacio
     // posición relativa: f = hacia delante, s = hacia el lado
     const ox=(f,sd)=>X+ca*f-sa*sd,oz=(f,sd)=>Z+sa*f+ca*sd;
     let ringY=Y0+.003,ringR=u*.5;
@@ -1615,6 +1812,10 @@ function drawCreatures(){
           inst(P.box,ox(.1*u,-.27*u),Y+.55*hu,oz(.1*u,-.27*u),rot,.25*u,.32*u,.05*u,tb?rgb(tb.col):C.war);}
         else inst(P.box,ox(.06*u,.26*u),Y+.75*hu,oz(.06*u,.26*u),rot,.05*u,1.0*u,.05*u,C.spear);
       }
+      if(c.scout>0&&!many){   // explorador: mochila y bastón
+        inst(P.box,ox(lean-.2*u,0),Y+.62*hu,oz(lean-.2*u,0),rot,.12*u,.24*hu,.22*u*Wb,syn?C.chrome2:C.pack);
+        inst(P.box,ox(.14*u,.26*u),Y+.5*hu,oz(.14*u,.26*u),rot,.04*u,1.0*hu,.04*u,syn?C.cyan:C.trunk);
+      }
       if(c.sick&&frameN%30<15)inst(P.glow,X,Y+1.1*hu,Z,0,.06*u,.06*u,.06*u,C.sick);
       if(syn&&!many)inst(P.halo,ox(lean*1.6,0),hy,oz(lean*1.6,0),0,.2*u,.2*u,.2*u,C.cyan);
       ringR=u*.32;
@@ -1668,8 +1869,10 @@ function tree(x,y,z,s,col){
   inst(B.cyl,x,y,z,0,.7*K*s,4*K*s,.7*K*s,C.trunk);
   inst(B.cone,x,y+3*K*s,z,0,3.6*K*s,9*K*s,3.6*K*s,col||C.leaf);
 }
-function drawBuilding(b,tc,kind,ruin){
-  const p=P3(b.x,b.y),X=p.x,Y=p.y,Z=p.z,a=b.a,ca=Math.cos(a),sa=Math.sin(a),rot=-a,u=K*BSCALE,v=b.v||0;
+let _dTb=null;   // pueblo cuyo edificio se está dibujando
+const HEX7=[[0,0],[1,0],[-1,0],[.5,.866],[-.5,.866],[.5,-.866],[-.5,-.866]];
+function drawBuilding(b,tc,kind,ruin,sc=1){
+  const p=P3(b.x,b.y),X=p.x,Y=p.y,Z=p.z,a=b.a,ca=Math.cos(a),sa=Math.sin(a),rot=-a,u=K*BSCALE*sc,v=b.v||0;
   const ox=(f,sd)=>X+(ca*f-sa*sd)*u,oz=(f,sd)=>Z+(sa*f+ca*sd)*u;
   // pieza en coordenadas del edificio: f = hacia delante, sd = lado, y = altura (unidades)
   const box=(pl,f,sd,y,w,h,d,col,r=0)=>inst(pl,ox(f,sd),Y+y*u,oz(f,sd),rot+r,w*u,h*u,d*u,col);
@@ -1889,9 +2092,119 @@ function drawBuilding(b,tc,kind,ruin){
       inst(B.glass,X,Y,Z,0,14*u,10*u,14*u,C.bio);
       for(let k=0;k<5;k++){const fa=k*1.256+b.x;tree(X+Math.cos(fa)*6*u,Y,Z+Math.sin(fa)*6*u,.9,C.leaf2);}
       inst(B.cyl,X,Y,Z,0,1.5*u,7*u,1.5*u,C.chrome);inst(B.dome,X,Y+7*u,Z,0,2.4*u,2.4*u,2.4*u,C.cyan);break;
+    case 'muralla':{   // muralla con cuatro puertas: piedra; hormigón desde la era industrial; obsidiana y luz en la sintética
+      const tb=_dTb,lv=tb?tb.lvl:5,R=b.r||30,n=clamp(Math.round(6.283*R/7),16,72),L=6.283*R/n*1.06*K,reg=regionOf(b.x,b.y);
+      const hpF=clamp((b.hp??60)/TOUGH.muralla,0,1),syn=lv>=10,mod=lv>=7&&!syn;
+      const col=syn?C.obsid:mod?C.concrete:C.stoneW,h=(syn?4:mod?7:6)*u,th=1.8*u,gw=5/R;
+      const okAt=t=>{const sx=b.x+Math.cos(t)*R,sy=b.y+Math.sin(t)*R,ti=tIdx(sx,sy);return ti>=0&&!wallT[ti]&&!waterT[ti]&&regionOf(sx,sy)===reg;};
+      for(let k=0;k<n;k++){
+        const t=(k+.5)/n*6.283;let g=((t-a)%1.5708+1.5708)%1.5708;g=Math.min(g,1.5708-g);
+        if(g<gw||!okAt(t))continue;                                     // hueco de la puerta, agua u obstáculo
+        const ct=Math.cos(t),st=Math.sin(t),wx=X+ct*R*K,wz=Z+st*R*K,r=-t-1.5708;
+        if(((k*37+11)%23)/23>hpF+.12){inst(B.box,wx,Y,wz,r,L*.7,h*.25,th*1.3,scaleRGB(col,.7));continue;}   // tramo derruido
+        inst(B.box,wx,Y,wz,r,L,h,th,col);
+        if(syn)inst(B.win,wx,Y+h,wz,r,L,.35*u,th*.5,C.cyan);
+        else if(mod)inst(B.box,wx,Y+h,wz,r,L,.5*u,th*.35,C.chimney);
+        else for(const f of [-.25,.25])inst(B.box,wx-st*f*L,Y+h,wz+ct*f*L,r,L*.28,1.2*u,th,col);   // almenas
+      }
+      for(let j=0;j<4;j++){                                              // torres de las puertas
+        const t=a+j*1.5708;if(!okAt(t))continue;
+        const ct=Math.cos(t),st=Math.sin(t),gx=X+ct*R*K,gz=Z+st*R*K,r=-t-1.5708,half=5*K;
+        for(const sd of [-1,1]){const px=gx-st*half*sd,pz=gz+ct*half*sd;
+          if(syn){inst(B.box,px,Y,pz,r,2.4*u,h*1.6,2.4*u,col);inst(P.glow,px,Y+h*1.6,pz,0,.6*u,.6*u,.6*u,C.cyan);}
+          else if(mod)inst(B.box,px,Y,pz,r,3*u,h*1.45,3*u,col);
+          else{inst(B.cyl,px,Y,pz,0,1.8*u,h*1.5,1.8*u,col);inst(B.cone,px,Y+h*1.5,pz,0,2.1*u,3*u,2.1*u,tc||C.roofDark);}}
+        inst(B.box,gx,Y+h*.95,gz,r,half*2,h*.35,th*1.2,col);            // dintel
+        if(tb&&tb.war)inst(B.box,gx,Y,gz,r,half*1.7,h*.95,th*.5,syn?scaleRGB(C.cyan,.6):C.door);   // en guerra, las puertas se cierran
+      }
+      break;}
+    case 'atalaya':{   // atalaya de vigilancia: antorcha; reflector desde la era industrial
+      const lv=_dTb?_dTb.lvl:5;
+      if(lv>=10){inst(B.cone,X,Y,Z,0,2.2*u,20*u,2.2*u,C.obsid);inst(P.glow,X,Y+15*u,Z,0,1*u,1*u,1*u,C.cyan);
+        inst(P.ring,X,Y+(11+Math.sin(frameN*.05+b.x)*2)*u,Z,0,3*u,8*u,3*u,C.cyan);break;}
+      const mod=lv>=7,col=mod?C.concrete:C.stoneW;
+      inst(B.cyl,X,Y,Z,0,2.2*u,14*u,2.2*u,col);
+      inst(B.box,X,Y+14*u,Z,rot,6*u,.8*u,6*u,scaleRGB(col,.85));
+      for(const [f,sd] of [[2.6,2.6],[2.6,-2.6],[-2.6,2.6],[-2.6,-2.6]])box(B.box,f,sd,14.8,1,mod?1.2:2.6,1,col);
+      if(mod){const a2=frameN*.02+b.x;inst(P.glow,X,Y+16*u,Z,0,.8*u,.8*u,.8*u,C.light);
+        inst(P.halo,X+Math.cos(a2)*5*u,Y+15.5*u,Z+Math.sin(a2)*5*u,0,2.6*u,1.4*u,2.6*u,scaleRGB(C.light,(1.2-dayAmount())*.7));}
+      else{inst(B.roof,X,Y+17.4*u,Z,rot+.785,4.8*u,3.4*u,4.8*u,tc||C.thatch);
+        const fl=.8+.3*Math.sin(frameN*.4+b.x);inst(P.glow,X,Y+15.8*u,Z,0,.7*u*fl,.9*u*fl,.7*u*fl,C.fire);
+        inst(P.halo,X,Y+15.8*u,Z,0,2*u*fl,1.8*u*fl,2*u*fl,scaleRGB(C.fire,.5));}
+      break;}
+    case 'fortaleza':{   // colina excavada a mano con una fortaleza en lo alto
+      const pr=b.prog??1,HR=HILL_R/BSCALE,HH=8*pr;
+      inst(B.dome,X,Y,Z,b.x,HR*u,Math.max(.3,HH)*u,HR*u,C.earth);
+      hills.push({x:b.x,y:b.y,r2:HILL_R*HILL_R,h:HH*u});
+      if(pr<1){   // aún excavando: montones de tierra alrededor
+        for(let k=0;k<4;k++){const fa=k*1.571+b.x;inst(B.cone,X+Math.cos(fa)*HR*1.2*u,Y,Z+Math.sin(fa)*HR*1.2*u,0,2.2*u,(1+2*(1-pr))*u,2.2*u,scaleRGB(C.earth,1.15));}
+        break;}
+      inst(B.dome,X,Y+HH*.25*u,Z,b.x+1,HR*.8*u,HH*.78*u,HR*.8*u,C.moss);
+      inst(P.ring,X,Y+HH*.5*u,Z,0,HR*.86*u,8*u,HR*.86*u,C.path);           // camino de subida
+      const yy=HH*.98,lv=_dTb?_dTb.lvl:5,col=lv>=7?C.concrete:C.stoneW,syn=lv>=10;
+      inst(B.cyl,X,Y+(yy-1)*u,Z,0,5.4*u,1.6*u,5.4*u,scaleRGB(col,.85));
+      box(B.box,0,3.6,yy,7.2,3.4,.8,col);box(B.box,0,-3.6,yy,7.2,3.4,.8,col);box(B.box,3.6,0,yy,.8,3.4,7.2,col);box(B.box,-3.6,0,yy,.8,3.4,7.2,col);
+      for(const [f,sd] of [[3.6,3.6],[3.6,-3.6],[-3.6,3.6],[-3.6,-3.6]]){
+        inst(B.cyl,ox(f,sd),Y+yy*u,oz(f,sd),0,1.3*u,5.2*u,1.3*u,col);
+        if(syn)inst(P.glow,ox(f,sd),Y+(yy+5.6)*u,oz(f,sd),0,.6*u,.6*u,.6*u,C.cyan);
+        else inst(B.cone,ox(f,sd),Y+(yy+5.2)*u,oz(f,sd),0,1.6*u,2.4*u,1.6*u,lv>=7?C.roofDark:tc);}
+      box(B.box,0,0,yy,3.6,7.5,3.6,scaleRGB(col,1.08));                     // torre del homenaje
+      for(const [f,sd] of [[1.4,1.4],[1.4,-1.4],[-1.4,1.4],[-1.4,-1.4]])box(B.box,f,sd,yy+7.5,.8,1,.8,col);
+      box(B.box,3.62,0,yy,.2,2.2,1.6,C.door);
+      box(B.box,0,0,yy+7.5,.25,5,.25,C.white);box(B.box,0,1.1,yy+10.8,.15,1.4,2,tc);   // bandera
+      break;}
+    case 'escudo':{    // cúpula-escudo: frena proyectiles y meteoritos (brilla al recibir un golpe)
+      const R=(b.r||40)*K,e=clamp((b.e??100)/100,0,1),hit=S.tick-(b.hitT??-99)<12;
+      const br=(hit?1.7:.3+.5*e)*(.85+.15*Math.sin(frameN*.05+b.x));
+      inst(B.shield,X,Y,Z,frameN*.001,R,R*.75,R,scaleRGB(C.shieldC,br));
+      const gx=ox(9,0),gz=oz(9,0),pl=1+.2*Math.sin(frameN*.1);               // generador
+      inst(B.cyl,gx,Y,gz,0,1.2*u,9*u,1.2*u,C.chrome);inst(B.cyl,gx,Y,gz,0,2.4*u,1*u,2.4*u,C.chrome2);
+      inst(P.glow,gx,Y+9.6*u,gz,0,1.2*u,1.2*u,1.2*u,C.shieldC);inst(P.halo,gx,Y+9.6*u,gz,0,2.6*u*pl,2.6*u*pl,2.6*u*pl,scaleRGB(C.shieldC,.5*e+.1));
+      break;}
+    case 'datos':{     // torre de datos: monolito oscuro con pulsos de luz que suben
+      const h=30+((b.x*5.1+b.y*2.3)%1)*22;
+      box(B.box,0,0,0,8,1,8,C.chrome2);
+      inst(B.box,X,Y,Z,rot,5*u,h*u,5*u,C.obsid);
+      inst(B.box,X,Y,Z,rot+.785,3.6*u,h*1.08*u,3.6*u,scaleRGB(C.obsid,1.5));
+      for(const [f,sd] of [[2.55,0],[-2.55,0],[0,2.55],[0,-2.55]])inst(B.win,ox(f,sd),Y+h*.5*u,oz(f,sd),rot,(sd?.5:.12)*u,h*.92*u,(sd?.12:.5)*u,scaleRGB(C.cyan,.55));
+      for(let k=0;k<4;k++){const f=(frameN*.004+k/4+b.x*.01)%1;inst(B.win,X,Y+f*h*u,Z,rot,5.3*u,.4*u,5.3*u,scaleRGB(C.cyan,1-f*.6));}
+      inst(P.ring,X,Y+(h*.62+Math.sin(frameN*.03+b.x)*3)*u,Z,0,5.5*u,6*u,5.5*u,C.cyan);
+      inst(P.glow,X,Y+(h*1.08+1)*u,Z,0,.8*u,.8*u,.8*u,frameN%30<15?C.cyan:C.white);
+      break;}
+    case 'esfera':{    // esfera de cristal flotante con un núcleo de luz
+      const cy=11+Math.sin(frameN*.02+b.x)*.6,R=5.5;
+      inst(B.cyl,X,Y,Z,0,3*u,.6*u,3*u,C.chrome2);inst(B.cyl,X,Y,Z,0,.4*u,(cy-R*.8)*u,.4*u,C.chrome);
+      inst(B.orb,X,Y+cy*u,Z,frameN*.005,R*u,R*u,R*u,C.crystal);
+      inst(P.glow,X,Y+cy*u,Z,0,1.5*u,1.5*u,1.5*u,v===1?C.hive1:C.cyan);
+      inst(P.halo,X,Y+cy*u,Z,0,2.8*u,2.8*u,2.8*u,scaleRGB(C.bio,.55));
+      inst(P.ring,X,Y+cy*u,Z,frameN*.01,R*1.3*u,10*u,R*1.3*u,C.cyan);
+      for(let k=0;k<3;k++){const fa=frameN*.03+k*2.094+b.y;inst(P.glow,X+Math.cos(fa)*R*1.3*u,Y+(cy+Math.sin(fa*1.3)*1.5)*u,Z+Math.sin(fa)*R*1.3*u,0,.35*u,.35*u,.35*u,C.white);}
+      break;}
+    case 'colmena':{   // colmena de luz: celdas hexagonales que laten
+      for(let k=0;k<7;k++){
+        const [hf,hs]=HEX7[k],h=4+((k*37+v*11)%7)*1.6+(k===0?6:0),pl=.5+.5*Math.sin(frameN*.05+k*1.3+b.x);
+        box(B.hex,hf*3.2,hs*3.2,0,1.8,h,1.8,C.hexBody);
+        box(B.hexL,hf*3.2,hs*3.2,h,1.5,.5,1.5,lerpRGB(C.hive1,C.hive2,pl));
+      }
+      inst(P.halo,X,Y+8*u,Z,0,7*u,5*u,7*u,scaleRGB(C.hive1,.3));
+      for(let k=0;k<4;k++){const fa=frameN*.04*(k%2?1:-1)+k*1.571+b.x,yy=6+((frameN*.02+k*.25)%1)*10;
+        inst(P.glow,X+Math.cos(fa)*5*u,Y+yy*u,Z+Math.sin(fa)*5*u,0,.3*u,.3*u,.3*u,k%2?C.hive2:C.hive1);}
+      break;}
   }
 }
+/* transformación a la era sintética: la casa se encoge y se disuelve; el hábitat nuevo crece entre destellos */
+const MORPH_T=240,_mb={};
+function drawMorph(b,tc,kind){
+  const f=(S.tick-b.mt)/MORPH_T,q=P3(b.x,b.y),s=BSIZE[b.k]*BSCALE*K;
+  if(f<.45){Object.assign(_mb,b);_mb.k=b.from||'casa';_mb.mt=0;drawBuilding(_mb,tc,kind,false,1-f*.9);}
+  else drawBuilding(b,tc,kind,false,.25+.75*(f-.45)/.55);
+  const pl=.5+.5*Math.sin(frameN*.25+b.x);
+  inst(P.halo,q.x,q.y+s*.5,q.z,0,s*(.6+f*.4),s*(.8+pl*.3),s*(.6+f*.4),scaleRGB(C.cyan,.5*(1-f)+.2));
+  for(let k=0;k<4;k++){const fa=frameN*.05+k*1.571,yy=((frameN*.01+k*.25)%1)*s*1.4;
+    inst(P.glow,q.x+Math.cos(fa)*s*.45,q.y+yy,q.z+Math.sin(fa)*s*.45,0,s*.04,s*.04,s*.04,C.white);}
+}
 function drawCivs(){
+  hills.length=0;
   for(const r of S.ruins)drawBuilding(r,null,null,true);
   for(const tr of S.wild){const q=P3(tr.x,tr.y);treeSp(q.x,q.y,q.z,tr.s,tr.sp,tr.x);}
   for(const l of S.lakes){const q=P3(l.x,l.y);inst(B.water,q.x,q.y,q.z,0,l.r*K,.003+Math.sin(frameN*.03+l.x)*.0008,l.r*K,C.lake);}
@@ -1900,7 +2213,9 @@ function drawCivs(){
     if(tb.corral){const q=P3(tb.corral.x,tb.corral.y);inst(P.ring,q.x,q.y+.002,q.z,0,tb.corral.r*K,.06,tb.corral.r*K,C.herd);}
     for(const tr of tb.trees){const q=P3(tr.x,tr.y);if(tr.sp)treeSp(q.x,q.y,q.z,tr.s,tr.sp,tr.x);else tree(q.x,q.y,q.z,tr.s,tb.kind==='eco'?C.leaf:C.leaf2);}
     if(tb.kind==='mar'&&tb.wet)drawBoats(tb);
-    for(const b of tb.buildings)drawBuilding(b,tc,tb.kind,false);
+    _dTb=tb;
+    for(const b of tb.buildings){if(b.mt&&S.tick-b.mt<MORPH_T)drawMorph(b,tc,tb.kind);else drawBuilding(b,tc,tb.kind,false);}
+    _dTb=null;
     if(tb.lvl<3){
       const f=.9+.3*Math.sin(frameN*.3+tb.id);
       inst(P.glow,X,Y+1.2*K,Z,0,1.6*K*f,1.6*K*f,1.6*K*f,C.fire);
@@ -1967,7 +2282,13 @@ function spawnDebris(b){
   fxB.booms.push({x:X,y:Y+.01,z:Z,t:0,dust:true});
   if(fxB.debris.length>400)fxB.debris.splice(0,fxB.debris.length-400);
 }
-const _s3a=new THREE.Vector3(),_s3b=new THREE.Vector3();
+const _s3a=new THREE.Vector3(),_s3b=new THREE.Vector3(),_s3c=new THREE.Vector3();
+/* posición de un proyectil en su vuelo en arco (f = 0..1) */
+function shotPos(sh,f,out){
+  let q=P3(sh.x0,sh.y0);_s3a.set(q.x,q.y,q.z);q=P3(sh.x1,sh.y1);_s3b.set(q.x,q.y,q.z);
+  const hgt=.08+_s3a.distanceTo(_s3b)*.35;
+  return out.set(_s3a.x+(_s3b.x-_s3a.x)*f,_s3a.y+(_s3b.y-_s3a.y)*f+Math.sin(Math.PI*f)*hgt,_s3a.z+(_s3b.z-_s3a.z)*f);
+}
 function drawDisasters(dt){
   for(const f of S.fires){
     // crece al prender y se va apagando al final de su vida
@@ -1995,16 +2316,14 @@ function drawDisasters(dt){
   }
   for(const sh of S.shots){
     if(sh.t<0)continue;
-    const f=sh.t/sh.dur;let q=P3(sh.x0,sh.y0);_s3a.set(q.x,q.y,q.z);q=P3(sh.x1,sh.y1);_s3b.set(q.x,q.y,q.z);
-    const d=_s3a.distanceTo(_s3b),hgt=.08+d*.35;
-    const x=_s3a.x+(_s3b.x-_s3a.x)*f,z=_s3a.z+(_s3b.z-_s3a.z)*f,y=_s3a.y+(_s3b.y-_s3a.y)*f+Math.sin(Math.PI*f)*hgt;
+    const v=shotPos(sh,sh.t/sh.dur,_s3c),x=v.x,y=v.y,z=v.z;
     const r=sh.lvl>=9?.006:sh.lvl>=7?.005:.007;
     inst(P.glow,x,y,z,0,r,r,r,sh.lvl>=9?C.missile:sh.lvl>=7?C.shell:C.ruin);
     if(sh.lvl>=7)inst(P.halo,x,y,z,0,r*2.4,r*2.4,r*2.4,sh.lvl>=9?C.flame:scaleRGB(C.boom,.5));
   }
   // ☄️ meteoritos cayendo
   for(const m of S.meteors){
-    const f=m.t/m.dur,q=P3(m.x,m.y),h=(1-f)*2.6,off=(1-f)*1.2;
+    const f=m.t/m.dur,q=P3(m.x,m.y),h=(1-f)*METEOR_H*K,off=(1-f)*1.2;
     const x=q.x+off,y=q.y+h,z=q.z-off*.5,r=.03+.01*Math.sin(frameN*.6);
     inst(P.head,x,y,z,frameN*.1,r,r,r,C.ruin);
     inst(P.halo,x,y,z,0,r*3,r*3,r*3,C.flame);
@@ -2014,7 +2333,7 @@ function drawDisasters(dt){
   for(const b of fxB.booms){
     const life=b.big?1.4:b.dust?.9:.6;
     b.t+=dt;const f=b.t/life,s=(b.big?.32:b.dust?.07:b.splash?.05:.06)*Math.min(1,f*1.6);
-    const col=b.dust?scaleRGB(C.debris,(1-f)*.8):b.splash?scaleRGB(C.splash,(1-f)):scaleRGB(b.spark?C.spark:C.boom,(1-f));
+    const col=b.shield?scaleRGB(C.shieldC,(1-f)*1.4):b.dust?scaleRGB(C.debris,(1-f)*.8):b.splash?scaleRGB(C.splash,(1-f)):scaleRGB(b.spark?C.spark:C.boom,(1-f));
     inst(P.halo,b.x,b.y+(b.splash?f*.04:0),b.z,0,s,s*(b.splash?1.4:.7),s,col);
   }
   fxB.booms=fxB.booms.filter(b=>b.t<(b.big?1.4:b.dust?.9:.6));
@@ -2303,6 +2622,7 @@ function tabCiv(y){
     tx(`${tb.n} hab.`,PANEL_W-56,y+42,23,UI.muted,false,'right');
     const bits=[tb.type==='p'?'presas':'depredadores',regionOf(tb.hx,tb.hy).name.toLowerCase()];
     if(tb.buildings.length)bits.push(`${tb.buildings.length} edificios`);if(tb.trees.length)bits.push(`${tb.trees.length} árboles`);
+    {const sh=shieldOf(tb);if(threatened(tb)&&!en)bits.push('⚠️ en alerta');if(tb.wr)bits.push('🧱 amurallada');if(sh)bits.push(`🛡️ escudo ${Math.round(sh.e??100)} %`);if(tb.sc)bits.push(`🧭 ${tb.sc} exploradores`);}
     if(tb.cures.length)bits.push(`${tb.cures.length} curas`);if(tb.wins)bits.push(`${tb.wins} victorias`);if(pa)bits.push(`colonia de los ${pa.name}`);
     tx(en?`⚔️ EN GUERRA con los ${en.name}`:bits.join(', '),88,y+80,21,en?'#ff8f7a':UI.muted,false,'left',PANEL_W-88-300);
     // órdenes: guerra, paz, armas
@@ -2316,8 +2636,8 @@ function tabCiv(y){
   y+=62;
   sec('Las eras',y);
   y+=4;
-  wrap('Tribu → Agricultura o Ganadería → Aldea → Guerreros → Ciudad-estado → Reino → Industrial → Moderna → Espacial → Sintética. 🔬 Avanzan rápido · 🌳 Plantan bosques y no atacan · 💣 Guerras, talas y contaminación · ⚓ Viven del agua: pescan, nadan, barcos y palafitos. Desde el Reino, los pueblos en guerra disparan catapultas, obuses y misiles.',
-       32,y+6,PANEL_W-64,21,UI.muted,28,4);
+  wrap('Tribu → Agricultura o Ganadería → Aldea → Guerreros → Ciudad-estado → Reino → Industrial → Moderna → Espacial → Sintética. 🔬 Avanzan rápido · 🌳 Plantan bosques y no atacan · 💣 Guerras, talas y contaminación · ⚓ Viven del agua: pescan, nadan, barcos y palafitos. Desde el Reino, los pueblos en guerra disparan catapultas, obuses y misiles. Amenazados, levantan murallas, atalayas y una fortaleza en una colina; desde la era moderna, una cúpula-escudo. En la era sintética las casas se transforman en torres de datos, esferas de cristal y colmenas de luz.',
+       32,y+6,PANEL_W-64,21,UI.muted,28,7);
 }
 function tabDatos(y){
   const cols=[[330,'Presas',UI.prey],[480,'Depred.',UI.pred],[630,'Zombis',UI.zombie],[790,'Inmunes',UI.imm],[968,'Intelig.',UI.ink]];
@@ -2448,7 +2768,7 @@ function smashAt(p){
   while((hit=findBuildingAt(p.x,p.y,SMASH_R))){destroyBuilding(hit.tb,hit.i,'demolición');n++;}
   for(const id in S.tribes){const tr=S.tribes[id].trees;for(let i=tr.length-1;i>=0;i--)if((tr[i].x-p.x)**2+(tr[i].y-p.y)**2<SMASH_R*SMASH_R){tr.splice(i,1);n++;}}
   const w0=S.wild.length;S.wild=S.wild.filter(tr=>(tr.x-p.x)**2+(tr.y-p.y)**2>=SMASH_R*SMASH_R);n+=w0-S.wild.length;
-  return n+smashWalls(p,8);
+  return n+hurtWalls(p.x,p.y,SMASH_R,30,'demolición')+smashWalls(p,8);
 }
 /* Rompe los muros (cristal de los recipientes, piedra y madera de los pueblos) en un radio */
 function smashWalls(p,r){
@@ -2626,6 +2946,7 @@ function handSmash(ptr,dt){
     const hy=_loc.y-r.oy;if(hy<-.03||hy>.5)continue;
     const hit=findBuildingAt(sx,sy,3);
     if(hit&&hy<BHEIGHT[hit.b.k]*BSCALE*K+.01){destroyBuilding(hit.tb,hit.i,'tu mano');buzz(ptr,1,140);}
+    else if(hy<BHEIGHT.muralla*BSCALE*K+.01&&hurtWalls(sx,sy,3,15,'tu mano'))buzz(ptr,1,120);
     else if(hy<.12&&smashWalls({x:sx,y:sy},7))buzz(ptr,.9,100);   // golpear un muro o el cristal lo rompe
     break;
   }
@@ -2920,7 +3241,7 @@ function load(){
     wallT.set(d.wt);wallHP.set(d.wh);for(let i=0;i<wallT.length;i++)if(wallT[i]===VOID)wallHP[i]=WALL_HP[VOID];
     S.creatures=S.creatures.map(o=>Object.assign(blankC(),o,{held:false}));
     for(const sh of S.ships)sh.crew=sh.crew.map(o=>Object.assign(blankC(),o));
-    for(const id in S.tribes){const tb=S.tribes[id];tb.kind??='tec';tb.buildings??=[];tb.trees??=[];tb.lastShip??=S.tick;tb.arms??=0;tb.cures??=[];tb.cureProg??={};tb.look??=makeLook(tb.type);}
+    for(const id in S.tribes){const tb=S.tribes[id];tb.kind??='tec';tb.buildings??=[];tb.trees??=[];tb.lastShip??=S.tick;tb.arms??=0;tb.cures??=[];tb.cureProg??={};tb.look??=makeLook(tb.type);tb.threat??=-1e9;tb.def??=1;tb.wr??=0;tb.sc??=0;tb.watch??=0;}
     zonesDirty=true;computeZones();rebuildWater();wallsDirty=true;return true;
   }catch(e){S=null;return false;}
 }
